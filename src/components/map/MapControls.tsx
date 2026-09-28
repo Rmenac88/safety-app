@@ -1,0 +1,156 @@
+import React from 'react';
+import { Navigation, Moon, Sun, AlertTriangle, Route, Globe, Box } from 'lucide-react';
+import { useSafety } from '../../context/SafetyContext';
+
+export const MapControls: React.FC = () => {
+  const {
+    filters, updateFilters, requestUserLocation,
+    gpsState, hapticFeedback, drawingMode, startDrawing, cancelDrawing,
+    isGlobeMode, toggleGlobeMode, mapPitch, togglePitch,
+  } = useSafety();
+
+  const [showGpsHint, setShowGpsHint] = React.useState(false);
+
+  const isDark = filters.mapTileStyle === 'dark';
+
+  const handleGpsClick = () => {
+    if (gpsState === 'denied') {
+      setShowGpsHint(true);
+      hapticFeedback('heavy');
+      setTimeout(() => setShowGpsHint(false), 4500);
+    }
+    requestUserLocation({ silent: false, forceRecenter: true });
+  };
+
+  const gpsColor = gpsState === 'granted'
+    ? 'text-s-primary ring-1 ring-blue-500/40 bg-blue-50/80 dark:bg-blue-950/40'
+    : gpsState === 'denied'
+    ? 'text-s-danger ring-1 ring-red-500/40 bg-red-50/80 dark:bg-red-950/40'
+    : isDark ? 'text-slate-400' : 'text-slate-600';
+
+  const btnBase = `w-9 h-9 sm:w-10 sm:h-10 backdrop-blur-2xl rounded-2xl flex items-center justify-center shadow-island transition-all active:scale-90 border ${
+    isDark
+      ? 'bg-slate-900/94 border-slate-700/80 text-slate-300 hover:bg-slate-800'
+      : 'bg-white/94 border-slate-200/90 text-slate-700 hover:bg-slate-100'
+  }`;
+
+  const toggleTheme = () => {
+    hapticFeedback('light');
+    updateFilters({ mapTileStyle: isDark ? 'light' : 'dark' });
+  };
+
+  const toggleCriticalOnly = () => {
+    hapticFeedback('light');
+    updateFilters({
+      minSeverity: filters.minSeverity === 'critical' ? 'all' : 'critical'
+    });
+  };
+
+  const toggleVectorDrawing = () => {
+    hapticFeedback('medium');
+    if (drawingMode !== 'idle') {
+      cancelDrawing();
+    } else {
+      startDrawing('linestring', 'danger', 'map');
+    }
+  };
+
+  return (
+    <div className="fixed right-3.5 sm:right-4 bottom-36 sm:bottom-auto sm:top-24 z-20 flex flex-col items-end gap-2.5 pointer-events-auto transition-all duration-300">
+      {/* ── GPS Denied Explanatory Popover ─────────────────────────────────── */}
+      {showGpsHint && (
+        <div className="absolute right-12 top-0 w-64 p-2.5 rounded-2xl bg-slate-900/95 border border-red-500/50 shadow-2xl text-white text-xs backdrop-blur-xl animate-fade-in pointer-events-none">
+          <p className="font-bold text-red-400 flex items-center gap-1.5 mb-1">
+            <Navigation className="w-3.5 h-3.5 shrink-0" />
+            Accès position désactivé
+          </p>
+          <p className="text-[11px] leading-relaxed text-slate-300">
+            Activez la localisation dans les réglages de votre navigateur pour centrer la carte sur votre position.
+          </p>
+        </div>
+      )}
+
+      {/* ── 1. GPS Locate & Cinematic Zoom ─────────────────────────────── */}
+      <button
+        onClick={handleGpsClick}
+        className={`${btnBase} ${gpsColor} relative`}
+        title={
+          gpsState === 'denied'
+            ? 'Localisation refusée (cliquer pour aide)'
+            : gpsState === 'granted'
+            ? 'Recentrer et zoomer sur ma position GPS'
+            : 'Activer ma position GPS'
+        }
+        aria-label="Localiser ma position GPS"
+      >
+        <Navigation className={`w-4 h-4 sm:w-4.5 sm:h-4.5 ${gpsState === 'locating' ? 'animate-spin text-s-primary' : ''}`} />
+        {gpsState === 'granted' && (
+          <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+        )}
+      </button>
+
+      {/* ── 2. Vue Terre / Espace Planétaire (Globe) ───────────────────── */}
+      <button
+        onClick={toggleGlobeMode}
+        className={`${btnBase} ${
+          isGlobeMode
+            ? 'bg-emerald-500/20 text-emerald-500 border-emerald-400/60 shadow-emerald-500/25 ring-1 ring-emerald-500/40'
+            : isDark ? 'text-emerald-400 hover:text-emerald-300' : 'text-emerald-600 hover:text-emerald-700'
+        }`}
+        title={isGlobeMode ? 'Vue rapprochée (Rue)' : 'Vue planétaire Terre'}
+        aria-label="Vue planétaire Terre"
+      >
+        <Globe className={`w-4 h-4 sm:w-4.5 sm:h-4.5 ${isGlobeMode ? 'animate-pulse' : ''}`} />
+      </button>
+
+      {/* ── 3. Vision Perspective 3D Tilt ─────────────────────────────── */}
+      <button
+        onClick={togglePitch}
+        className={`${btnBase} ${
+          mapPitch > 15
+            ? 'bg-orange-500/20 text-orange-500 border-orange-400/60 shadow-orange-500/25 ring-1 ring-orange-500/40'
+            : isDark ? 'text-slate-300 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+        }`}
+        title={mapPitch > 15 ? 'Basculer en vue 2D à plat' : 'Activer perspective 3D'}
+        aria-label="Perspective 3D"
+      >
+        <Box className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+      </button>
+
+      {/* ── 4. Direct Vector Tracing Mode Launcher ───────────────────────── */}
+      <button
+        onClick={toggleVectorDrawing}
+        className={`${btnBase} ${
+          drawingMode !== 'idle'
+            ? 'bg-s-primary text-white border-blue-400 shadow-glow-primary animate-pulse'
+            : isDark ? 'text-sky-400 hover:text-sky-300' : 'text-blue-600 hover:text-blue-700'
+        }`}
+        title={drawingMode !== 'idle' ? 'Annuler le tracé vectoriel' : 'Tracer directement sur la carte'}
+      >
+        <Route className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+      </button>
+
+      {/* ── 5. Theme Switcher (Dark / Light) ─────────────────────────────── */}
+      <button
+        onClick={toggleTheme}
+        className={`${btnBase} text-s-primary`}
+        title={isDark ? 'Passer en mode clair' : 'Passer en mode sombre'}
+      >
+        {isDark ? <Sun className="w-4 h-4 sm:w-4.5 sm:h-4.5" /> : <Moon className="w-4 h-4 sm:w-4.5 sm:h-4.5" />}
+      </button>
+
+      {/* ── 6. Critical Alerts Filter Toggle ─────────────────────────────── */}
+      <button
+        onClick={toggleCriticalOnly}
+        className={`${btnBase} ${
+          filters.minSeverity === 'critical'
+            ? 'border-red-500 text-red-500 bg-red-50/90 dark:bg-red-950/60 shadow-red-500/20'
+            : ''
+        }`}
+        title={filters.minSeverity === 'critical' ? 'Afficher tous les niveaux' : 'Filtrer uniquement les alertes critiques'}
+      >
+        <AlertTriangle className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+      </button>
+    </div>
+  );
+};
