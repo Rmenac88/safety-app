@@ -133,3 +133,20 @@ export type SelectedLocation = {
   city?: string;
   placeData?: GeocodedPlace;
 };
+
+export interface WalkSession {
+  id: string;
+  status: 'idle' | 'active' | 'arrived' | 'alert';
+  destinationName: string;
+  destinationCoords: [number, number]; // [lat, lng]
+  startCoords: [number, number];
+  estimatedMinutes: number;
+  startedAt: number; // timestamp ms
+  targetArrivalTimestamp: number; // timestamp ms
+  contactName?: string;
+  contactPhone?: string;
+  safetyCheckPending: boolean;
+  checkDeadlineSeconds: number;
+  isSirenActive: boolean;
+}
+

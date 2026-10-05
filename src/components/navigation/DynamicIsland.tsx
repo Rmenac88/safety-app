@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Search, X, MapPin, Loader2, History, Clock, Star, AlertTriangle,
-  ChevronRight, Bell, Shield, Compass, Sparkles, Trash2, Sliders
+  ChevronRight, Bell, Shield, Compass, Sparkles, Trash2, Sliders,
+  HeartHandshake, Volume2
 } from 'lucide-react';
 import { useSafety } from '../../context/SafetyContext';
 import { searchPlaces, getSearchHistory, saveSearchToHistory, clearSearchHistory, fetchStreetGeometry } from '../../api/geocodingApi';
@@ -30,6 +31,7 @@ export const DynamicIsland: React.FC = () => {
     notificationRadiusKm, setNotificationRadiusKm,
     deleteNotification,
     userLocation, hapticFeedback,
+    walkSession, toggleWalkSiren,
   } = useSafety();
 
   const [isOpen, setIsOpen] = useState(false);
@@ -300,6 +302,62 @@ export const DynamicIsland: React.FC = () => {
                 </div>
               )}
             </div>
+          ) : walkSession && (walkSession.status === 'active' || walkSession.status === 'alert') ? (
+            /* Walk With Me Live Journey Pill */
+            <div className="flex items-center justify-between w-full px-2 py-0.5">
+              <div
+                onClick={() => {
+                  hapticFeedback('light');
+                  setActiveModal('walk');
+                }}
+                className="flex items-center gap-2 cursor-pointer min-w-0"
+              >
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
+                  walkSession.status === 'alert' ? 'bg-red-500 text-white animate-pulse' : 'bg-cyan-500/20 text-cyan-400'
+                }`}>
+                  <HeartHandshake className="w-4 h-4" />
+                </div>
+                <div className="truncate">
+                  <div className="text-xs font-black truncate flex items-center gap-1.5 leading-tight">
+                    <span>Trajet sécurisé</span>
+                    <span className="text-[10px] text-cyan-400 font-mono font-extrabold">
+                      {String(Math.floor(Math.max(0, walkSession.targetArrivalTimestamp - Date.now()) / 60000)).padStart(2, '0')}:
+                      {String(Math.floor((Math.max(0, walkSession.targetArrivalTimestamp - Date.now()) % 60000) / 1000)).padStart(2, '0')}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 truncate leading-tight">
+                    🏁 {walkSession.destinationName}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleWalkSiren();
+                  }}
+                  className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform active:scale-90 ${
+                    walkSession.isSirenActive
+                      ? 'bg-red-600 text-white animate-pulse'
+                      : 'bg-red-500/15 text-red-500 hover:bg-red-500/30'
+                  }`}
+                  title={walkSession.isSirenActive ? "Couper l'alarme" : "Alarme sonore"}
+                >
+                  <Volume2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    hapticFeedback('medium');
+                    setActiveModal('walk');
+                  }}
+                  className="px-2.5 py-1 rounded-full bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-400 font-bold text-[10px]"
+                >
+                  Gérer
+                </button>
+              </div>
+            </div>
           ) : (
             /* Standard Compact Search Pill (Clean, minimal Apple design, no logo) */
             <>
@@ -317,28 +375,47 @@ export const DynamicIsland: React.FC = () => {
                 </span>
               </div>
 
-              {/* Right: Local Notifications Bell Trigger */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  hapticFeedback('light');
-                  setIsOpen(true);
-                  setActiveTab('alerts');
-                }}
-                className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors shrink-0 ${
-                  isDark
-                    ? 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900'
-                }`}
-                title="Alertes locales"
-              >
-                <Bell className="w-3.5 h-3.5" />
-                {unreadNotificationsCount > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-s-danger text-white text-[9px] font-bold flex items-center justify-center shadow-sm">
-                    {unreadNotificationsCount}
-                  </span>
-                )}
-              </button>
+              {/* Right: Walk With Me Trigger & Local Notifications Bell */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    hapticFeedback('medium');
+                    setActiveModal('walk');
+                  }}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors shrink-0 ${
+                    isDark
+                      ? 'bg-cyan-500/15 text-cyan-400 hover:bg-cyan-500/25'
+                      : 'bg-cyan-50 hover:bg-cyan-100 text-cyan-600'
+                  }`}
+                  title="Walk With Me — Trajet sécurisé"
+                  aria-label="Walk With Me — Trajet sécurisé"
+                >
+                  <HeartHandshake className="w-4 h-4" />
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    hapticFeedback('light');
+                    setIsOpen(true);
+                    setActiveTab('alerts');
+                  }}
+                  className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors shrink-0 ${
+                    isDark
+                      ? 'bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900'
+                  }`}
+                  title="Alertes locales"
+                >
+                  <Bell className="w-3.5 h-3.5" />
+                  {unreadNotificationsCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-s-danger text-white text-[9px] font-bold flex items-center justify-center shadow-sm">
+                      {unreadNotificationsCount}
+                    </span>
+                  )}
+                </button>
+              </div>
             </>
           )}
         </div>

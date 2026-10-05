@@ -9,7 +9,9 @@ import type { FavoriteDTO } from '../api/favoritesApi';
 import { fetchNotifications, markNotificationRead, deleteNotificationApi, clearAllNotificationsApi } from '../api/notificationsApi';
 import type { NotificationDTO } from '../api/notificationsApi';
 import { getDeviceId } from '../api/client';
-import type { DrawingMode, GeoJSONGeometry, IncidentCategory } from '../types/safety';
+import type { DrawingMode, GeoJSONGeometry, IncidentCategory, WalkSession } from '../types/safety';
+import { playEmergencySiren, stopEmergencySiren } from '../utils/sirenAudio';
+import { calculateDistance } from '../utils/geoUtils';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type GpsState = 'prompt' | 'granted' | 'denied' | 'locating' | 'unavailable';
@@ -127,6 +129,20 @@ interface SafetyContextType {
   // Favorites mutations
   addFavorite: (params: { name: string; placeType?: string; address?: string; latitude: number; longitude: number; notifyRadiusM?: number }) => Promise<void>;
   removeFavorite: (id: string) => Promise<void>;
+
+  // Walk With Me (Mode Trajet Sécurisé)
+  walkSession: WalkSession | null;
+  startWalkSession: (params: {
+    destinationName: string;
+    destinationCoords: [number, number];
+    estimatedMinutes: number;
+    contactName?: string;
+    contactPhone?: string;
+  }) => void;
+  confirmSafetyCheck: () => void;
+  triggerWalkAlert: () => void;
+  toggleWalkSiren: () => void;
+  endWalkSession: (status?: 'arrived' | 'idle') => void;
 }
 
 // ── Default Filter State ───────────────────────────────────────────────────────
@@ -1005,6 +1021,167 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     hapticFeedback('light');
   }, [sessionId, hapticFeedback]);
 
+  // ── Walk With Me (Mode Trajet Sécurisé) State & Engine ─────────────────────
+  const [walkSession, setWalkSession] = useState<WalkSession | null>(null);
+
+  const startWalkSession = useCallback((params: {
+    destinationName: string;
+    destinationCoords: [number, number];
+    estimatedMinutes: number;
+    contactName?: string;
+    contactPhone?: string;
+  }) => {
+    const now = Date.now();
+    const targetArrival = now + params.estimatedMinutes * 60 * 1000;
+    const currentLoc = userLocationRef.current || [48.8566, 2.3522];
+
+    const session: WalkSession = {
+      id: `walk_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      status: 'active',
+      destinationName: params.destinationName,
+      destinationCoords: params.destinationCoords,
+      startCoords: currentLoc,
+      estimatedMinutes: params.estimatedMinutes,
+      startedAt: now,
+      targetArrivalTimestamp: targetArrival,
+      contactName: params.contactName,
+      contactPhone: params.contactPhone,
+      safetyCheckPending: false,
+      checkDeadlineSeconds: 45,
+      isSirenActive: false,
+    };
+
+    setWalkSession(session);
+    setActiveModal('walk');
+    hapticFeedback('success');
+
+    // Pan map smoothly to frame the journey
+    const midLat = (currentLoc[0] + params.destinationCoords[0]) / 2;
+    const midLng = (currentLoc[1] + params.destinationCoords[1]) / 2;
+    setMapCenterState([midLat, midLng]);
+    setMapZoomState(15.2);
+    setCameraNonce((n) => n + 1);
+  }, [hapticFeedback]);
+
+  const confirmSafetyCheck = useCallback(() => {
+    hapticFeedback('success');
+    stopEmergencySiren();
+    setWalkSession((prev) => {
+      if (!prev) return null;
+      const now = Date.now();
+      const newTarget = Math.max(prev.targetArrivalTimestamp, now + 5 * 60 * 1000);
+      return {
+        ...prev,
+        status: 'active',
+        safetyCheckPending: false,
+        checkDeadlineSeconds: 45,
+        targetArrivalTimestamp: newTarget,
+        isSirenActive: false,
+      };
+    });
+  }, [hapticFeedback]);
+
+  const triggerWalkAlert = useCallback(() => {
+    hapticFeedback('heavy');
+    playEmergencySiren();
+    setWalkSession((prev) => prev ? { ...prev, status: 'alert', isSirenActive: true } : null);
+  }, [hapticFeedback]);
+
+  const toggleWalkSiren = useCallback(() => {
+    setWalkSession((prev) => {
+      if (!prev) return null;
+      const nextActive = !prev.isSirenActive;
+      if (nextActive) {
+        playEmergencySiren();
+        hapticFeedback('heavy');
+      } else {
+        stopEmergencySiren();
+        hapticFeedback('medium');
+      }
+      return { ...prev, isSirenActive: nextActive };
+    });
+  }, [hapticFeedback]);
+
+  const endWalkSession = useCallback((status: 'arrived' | 'idle' = 'idle') => {
+    stopEmergencySiren();
+    if (status === 'arrived') {
+      hapticFeedback('success');
+      setWalkSession((prev) => prev ? { ...prev, status: 'arrived', isSirenActive: false } : null);
+      setTimeout(() => {
+        setWalkSession(null);
+        setActiveModal(null);
+      }, 3500);
+    } else {
+      hapticFeedback('medium');
+      setWalkSession(null);
+      setActiveModal(null);
+    }
+  }, [hapticFeedback]);
+
+  // Live countdown & arrival watcher
+  useEffect(() => {
+    if (!walkSession || walkSession.status !== 'active') return;
+
+    const interval = setInterval(() => {
+      setWalkSession((prev) => {
+        if (!prev || prev.status !== 'active') return prev;
+
+        const now = Date.now();
+        const currentLoc = userLocationRef.current;
+
+        // Auto arrival check (< 45 meters)
+        if (currentLoc) {
+          const distM = calculateDistance(
+            currentLoc[0],
+            currentLoc[1],
+            prev.destinationCoords[0],
+            prev.destinationCoords[1]
+          );
+          if (distM < 45) {
+            stopEmergencySiren();
+            hapticFeedback('success');
+            setTimeout(() => {
+              setWalkSession(null);
+              setActiveModal(null);
+            }, 3500);
+            return { ...prev, status: 'arrived', isSirenActive: false };
+          }
+        }
+
+        // Safety check deadline countdown
+        if (prev.safetyCheckPending) {
+          const nextDeadline = prev.checkDeadlineSeconds - 1;
+          if (nextDeadline <= 0) {
+            playEmergencySiren();
+            hapticFeedback('heavy');
+            return {
+              ...prev,
+              status: 'alert',
+              safetyCheckPending: false,
+              checkDeadlineSeconds: 0,
+              isSirenActive: true,
+            };
+          }
+          return { ...prev, checkDeadlineSeconds: nextDeadline };
+        }
+
+        // Trigger safety check prompt if time expired
+        if (now >= prev.targetArrivalTimestamp && !prev.safetyCheckPending) {
+          hapticFeedback('heavy');
+          return {
+            ...prev,
+            safetyCheckPending: true,
+            checkDeadlineSeconds: 45,
+          };
+        }
+
+        return prev;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [walkSession?.status, hapticFeedback]);
+
   return (
     <SafetyContext.Provider value={{
       incidents, filteredIncidents, favorites, notifications, unreadNotificationsCount,
@@ -1025,6 +1202,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       deleteNotification, clearAllNotifications,
       submitIncident, handleConfirm, handleDispute, handleResolve, handleDelete, userVotes,
       addFavorite, removeFavorite,
+      walkSession, startWalkSession, confirmSafetyCheck, triggerWalkAlert, toggleWalkSiren, endWalkSession,
     }}>
       {children}
     </SafetyContext.Provider>

@@ -31,6 +31,10 @@ const LAYER_DRAWING_FILL = 'safety-mb-drawing-fill';
 const LAYER_DRAWING_LINES = 'safety-mb-drawing-lines';
 const LAYER_DRAWING_POINTS = 'safety-mb-drawing-points';
 
+const SRC_WALK_ROUTE = 'safety-walk-route-src';
+const LAYER_WALK_GLOW = 'safety-walk-route-glow';
+const LAYER_WALK_CORE = 'safety-walk-route-core';
+
 // ── SVG Icon Generator for Category Squircle Badges ───────────────────────────
 function getCategoryIconSvg(category: string): string {
   switch (category) {
@@ -80,6 +84,7 @@ export const SafetyMapboxEngine: React.FC = () => {
     addDrawingVertex,
     drawingCoordinates,
     drawingCategory,
+    walkSession,
   } = useSafety();
 
   const isDark = filters.mapTileStyle === 'dark';
@@ -89,6 +94,7 @@ export const SafetyMapboxEngine: React.FC = () => {
 
   // ── High-Visibility Apple-grade DOM User Marker Ref ───────────────────────
   const userMarkerRef = useRef<mapboxgl.Marker | null>(null);
+  const destMarkerRef = useRef<mapboxgl.Marker | null>(null);
 
   // ── Refs for Latest Callbacks (Guarantees fresh state in closures) ─────────
   const drawingModeRef = useRef(drawingMode);
@@ -369,6 +375,12 @@ export const SafetyMapboxEngine: React.FC = () => {
         } catch {}
         userMarkerRef.current = null;
       }
+      if (destMarkerRef.current) {
+        try {
+          destMarkerRef.current.remove();
+        } catch {}
+        destMarkerRef.current = null;
+      }
       markersRef.current.forEach((m) => m.remove());
       markersRef.current.clear();
       map.remove();
@@ -543,6 +555,67 @@ export const SafetyMapboxEngine: React.FC = () => {
     if (!map) return;
     syncUserGps(map, userLocation);
   }, [userLocation]);
+
+  // ── 6b. Sync Walk With Me Dynamic Safe Route & Destination Flag ───────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const walkSrc = map.getSource(SRC_WALK_ROUTE) as mapboxgl.GeoJSONSource | undefined;
+
+    if (!walkSession || walkSession.status !== 'active') {
+      if (walkSrc) {
+        walkSrc.setData({ type: 'FeatureCollection', features: [] });
+      }
+      if (destMarkerRef.current) {
+        destMarkerRef.current.remove();
+        destMarkerRef.current = null;
+      }
+      return;
+    }
+
+    const destCoords = walkSession.destinationCoords; // [lat, lng]
+    const destLngLat: [number, number] = [destCoords[1], destCoords[0]];
+    const currentLngLat: [number, number] = userLocation
+      ? [userLocation[1], userLocation[0]]
+      : destLngLat;
+
+    // Dynamic Route Line between current location and destination
+    if (walkSrc) {
+      walkSrc.setData({
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            geometry: {
+              type: 'LineString',
+              coordinates: [currentLngLat, destLngLat],
+            },
+            properties: {},
+          },
+        ],
+      });
+    }
+
+    // Dynamic Finish Marker with Apple-style Squircle Badge
+    if (!destMarkerRef.current) {
+      const el = document.createElement('div');
+      el.className = 'safety-walk-dest-marker select-none cursor-pointer';
+      el.innerHTML = `
+        <div style="position:relative;display:flex;align-items:center;justify-content:center;width:40px;height:40px;">
+          <div style="position:absolute;inset:0;border-radius:12px;background:#06B6D4;opacity:0.35;filter:blur(6px);animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;"></div>
+          <div style="position:relative;width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg, #06B6D4, #3B82F6);border:2px solid #FFFFFF;box-shadow:0 4px 14px rgba(6,182,212,0.5);display:flex;align-items:center;justify-content:center;font-size:16px;">
+            🏁
+          </div>
+        </div>
+      `;
+      destMarkerRef.current = new mapboxgl.Marker({ element: el, anchor: 'center' })
+        .setLngLat(destLngLat)
+        .addTo(map);
+    } else {
+      destMarkerRef.current.setLngLat(destLngLat);
+    }
+  }, [walkSession, userLocation]);
 
   // ── 7. 60 FPS Earth Spin & Laser Flow Loop ────────────────────────────────
   useEffect(() => {
@@ -738,6 +811,39 @@ export const SafetyMapboxEngine: React.FC = () => {
           'line-color': ['coalesce', ['get', 'color'], '#EF4444'],
           'line-width': 3.0,
           'line-opacity': 0.95,
+        },
+      });
+    }
+
+    // Walk With Me Dynamic Route Layers
+    if (!map.getSource(SRC_WALK_ROUTE)) {
+      map.addSource(SRC_WALK_ROUTE, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    }
+    if (!map.getLayer(LAYER_WALK_GLOW)) {
+      map.addLayer({
+        id: LAYER_WALK_GLOW,
+        type: 'line',
+        source: SRC_WALK_ROUTE,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#06B6D4',
+          'line-width': 12,
+          'line-blur': 6,
+          'line-opacity': 0.65,
+        },
+      });
+    }
+    if (!map.getLayer(LAYER_WALK_CORE)) {
+      map.addLayer({
+        id: LAYER_WALK_CORE,
+        type: 'line',
+        source: SRC_WALK_ROUTE,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#38BDF8',
+          'line-width': 4.5,
+          'line-opacity': 0.95,
+          'line-dasharray': [1, 1.5],
         },
       });
     }

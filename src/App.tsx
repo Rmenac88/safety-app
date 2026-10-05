@@ -13,6 +13,7 @@ import { LiveFeedDrawer } from './components/live/LiveFeedDrawer';
 import { FavoritesModal } from './components/favorites/FavoritesModal';
 import { ModerationDrawer } from './components/moderation/ModerationDrawer';
 import { OnboardingModal } from './components/onboarding/OnboardingModal';
+import { WalkWithMeSheet } from './components/walk/WalkWithMeSheet';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { SheetErrorBoundary } from './components/common/SheetErrorBoundary';
 
@@ -99,6 +100,9 @@ function AppContent() {
       </SheetErrorBoundary>
       <SheetErrorBoundary fallbackName="OnboardingModal">
         <OnboardingModal />
+      </SheetErrorBoundary>
+      <SheetErrorBoundary fallbackName="WalkWithMeSheet">
+        <WalkWithMeSheet />
       </SheetErrorBoundary>
     </div>
   );
