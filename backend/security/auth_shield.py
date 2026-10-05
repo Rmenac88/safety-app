@@ -3,9 +3,19 @@ import hmac
 import hashlib
 from typing import Optional
 
+def _require_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(
+            f"{name} is not set. Define it as an environment variable "
+            f"(locally in .env, in production in the Vercel project settings)."
+        )
+    return value
+
+
 # Server-side persistent secret keys (NEVER exposed to frontend, client bundles, or logs)
-SECURITY_SECRET_KEY = os.getenv("SECURITY_SECRET_KEY", "safety_production_hmac_secret_key_v1_defense_in_depth")
-ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "safety_super_admin_secret_key_2026_secured")
+SECURITY_SECRET_KEY = _require_env("SECURITY_SECRET_KEY")
+ADMIN_API_KEY = _require_env("ADMIN_API_KEY")
 
 
 def generate_owner_token(incident_id: str) -> str:

@@ -1,11 +1,11 @@
 import React from 'react';
-import { Navigation, Moon, Sun, AlertTriangle, Route, Globe, Box } from 'lucide-react';
+import { Navigation, Moon, Sun, AlertTriangle, Globe, Box } from 'lucide-react';
 import { useSafety } from '../../context/SafetyContext';
 
 export const MapControls: React.FC = () => {
   const {
     filters, updateFilters, requestUserLocation,
-    gpsState, hapticFeedback, drawingMode, startDrawing, cancelDrawing,
+    gpsState, hapticFeedback,
     isGlobeMode, toggleGlobeMode, mapPitch, togglePitch,
   } = useSafety();
 
@@ -28,7 +28,7 @@ export const MapControls: React.FC = () => {
     ? 'text-s-danger ring-1 ring-red-500/40 bg-red-50/80 dark:bg-red-950/40'
     : isDark ? 'text-slate-400' : 'text-slate-600';
 
-  const btnBase = `w-9 h-9 sm:w-10 sm:h-10 backdrop-blur-2xl rounded-2xl flex items-center justify-center shadow-island transition-all active:scale-90 border ${
+  const btnBase = `w-10 h-10 sm:w-11 sm:h-11 backdrop-blur-2xl rounded-2xl flex items-center justify-center shadow-island transition-all active:scale-90 border touch-manipulation select-none cursor-pointer ${
     isDark
       ? 'bg-slate-900/94 border-slate-700/80 text-slate-300 hover:bg-slate-800'
       : 'bg-white/94 border-slate-200/90 text-slate-700 hover:bg-slate-100'
@@ -46,17 +46,8 @@ export const MapControls: React.FC = () => {
     });
   };
 
-  const toggleVectorDrawing = () => {
-    hapticFeedback('medium');
-    if (drawingMode !== 'idle') {
-      cancelDrawing();
-    } else {
-      startDrawing('linestring', 'danger', 'map');
-    }
-  };
-
   return (
-    <div className="fixed right-3.5 sm:right-4 bottom-36 sm:bottom-auto sm:top-24 z-20 flex flex-col items-end gap-2.5 pointer-events-auto transition-all duration-300">
+    <div className="fixed right-3 sm:right-4 bottom-28 sm:bottom-auto sm:top-24 z-20 flex flex-col items-end gap-2 sm:gap-2.5 pointer-events-auto transition-all duration-300">
       {/* ── GPS Denied Explanatory Popover ─────────────────────────────────── */}
       {showGpsHint && (
         <div className="absolute right-12 top-0 w-64 p-2.5 rounded-2xl bg-slate-900/95 border border-red-500/50 shadow-2xl text-white text-xs backdrop-blur-xl animate-fade-in pointer-events-none">
@@ -117,20 +108,7 @@ export const MapControls: React.FC = () => {
         <Box className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
       </button>
 
-      {/* ── 4. Direct Vector Tracing Mode Launcher ───────────────────────── */}
-      <button
-        onClick={toggleVectorDrawing}
-        className={`${btnBase} ${
-          drawingMode !== 'idle'
-            ? 'bg-s-primary text-white border-blue-400 shadow-glow-primary animate-pulse'
-            : isDark ? 'text-sky-400 hover:text-sky-300' : 'text-blue-600 hover:text-blue-700'
-        }`}
-        title={drawingMode !== 'idle' ? 'Annuler le tracé vectoriel' : 'Tracer directement sur la carte'}
-      >
-        <Route className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-      </button>
-
-      {/* ── 5. Theme Switcher (Dark / Light) ─────────────────────────────── */}
+      {/* ── 4. Theme Switcher (Dark / Light) ─────────────────────────────── */}
       <button
         onClick={toggleTheme}
         className={`${btnBase} text-s-primary`}

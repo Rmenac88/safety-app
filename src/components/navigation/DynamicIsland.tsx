@@ -28,7 +28,7 @@ export const DynamicIsland: React.FC = () => {
     setSelectedIncident, setActiveModal, favorites, incidents,
     notifications, unreadNotificationsCount, markAsRead,
     notificationRadiusKm, setNotificationRadiusKm,
-    deleteNotification, clearAllNotifications,
+    deleteNotification,
     userLocation, hapticFeedback,
   } = useSafety();
 
@@ -529,18 +529,6 @@ export const DynamicIsland: React.FC = () => {
                   <span className="text-2xs font-bold text-slate-500 uppercase tracking-wider">
                     Alertes géolocalisées ({notifications.length})
                   </span>
-                  {notifications.length > 0 && (
-                    <button
-                      onClick={() => {
-                        hapticFeedback('medium');
-                        clearAllNotifications();
-                      }}
-                      className="text-2xs font-bold text-s-danger hover:underline flex items-center gap-1"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      <span>Tout effacer</span>
-                    </button>
-                  )}
                 </div>
 
                 {notifications.length === 0 ? (

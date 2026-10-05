@@ -247,6 +247,12 @@ export const SafetyMapboxEngine: React.FC = () => {
 
     mapRef.current = map;
 
+    // Capture du film : expose l'instance pour le script Playwright.
+    // Conditionné à la variable d'env, donc absent du bundle de production.
+    if (import.meta.env.VITE_FILM_CAPTURE === '1') {
+      (window as unknown as { __safetyMap?: mapboxgl.Map }).__safetyMap = map;
+    }
+
     map.on('style.load', () => {
       try {
         (map as any).setProjection('globe');
