@@ -3,7 +3,7 @@ import {
   X, Clock, Phone, Share2, AlertTriangle,
   Volume2, VolumeX, CheckCircle, MapPin,
   ChevronRight, ArrowRight, HeartHandshake, Loader2, Check,
-  Compass, Bell, MessageSquare
+  Compass, Bell, MessageSquare, ShieldAlert, PhoneCall
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useSafety } from '../../context/SafetyContext';
@@ -253,71 +253,96 @@ export const WalkWithMeSheet: React.FC = () => {
 
         {/* ── CASE 1: ALERT STATUS (EMERGENCY DISTRESS ACTIVATED) ─────── */}
         {walkSession?.status === 'alert' && (
-          <div className="flex flex-col gap-4 p-5 rounded-3xl bg-red-950/70 border-2 border-red-500 text-white animate-pulse shadow-[0_0_40px_rgba(239,68,68,0.4)]">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-red-600 flex items-center justify-center text-white shrink-0 shadow-lg animate-bounce">
-                <AlertTriangle className="w-7 h-7" />
+          <div className="relative overflow-hidden flex flex-col gap-5 p-5 sm:p-6 rounded-3xl bg-slate-950/95 border border-rose-500/30 text-white shadow-2xl shadow-rose-950/40">
+            {/* Ambient Apple-style static crimson glass glow (steady, no flashing) */}
+            <div className="absolute -top-16 -right-16 w-44 h-44 bg-rose-600/15 rounded-full blur-3xl pointer-events-none" />
+            <div className="absolute -bottom-16 -left-16 w-44 h-44 bg-red-600/10 rounded-full blur-3xl pointer-events-none" />
+
+            <div className="relative z-10 flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0 shadow-inner">
+                <ShieldAlert className="w-6 h-6 stroke-[2.2]" />
               </div>
-              <div>
-                <h3 className="text-base font-black text-red-200">ALERTE D'URGENCE DÉCLENCHÉE</h3>
-                <p className="text-xs text-red-300 mt-0.5">
-                  Aucune confirmation d'arrivée reçue. Sirène 110dB active.
+              <div className="min-w-0 flex-1">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/30 mb-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                  Assistance SOS enclenchée
+                </div>
+                <h3 className="text-base sm:text-lg font-black text-white leading-tight">
+                  Alerte d'urgence active
+                </h3>
+                <p className="text-xs text-slate-300/90 leading-relaxed mt-1">
+                  Temps de marche dépassé sans confirmation de sécurité. Vos coordonnées sont prêtes pour les secours.
                 </p>
               </div>
             </div>
 
-            {/* Emergency Action Buttons */}
-            <div className="flex flex-col gap-2 pt-2">
+            {/* Live GPS readout pill for reassuring clarity */}
+            <div className="relative z-10 flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs text-slate-300">
+              <MapPin className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+              <span className="truncate">
+                {userLocation
+                  ? `Position GPS : ${userLocation[0].toFixed(5)}, ${userLocation[1].toFixed(5)}`
+                  : 'Recherche de position GPS…'}
+              </span>
+            </div>
+
+            {/* Emergency Action Buttons (Apple Emergency SOS Style) */}
+            <div className="relative z-10 flex flex-col gap-2.5 pt-1">
+              {/* Primary Call Button */}
               <a
                 href={`tel:${emergencyDialNumber}`}
-                className="w-full py-3.5 px-4 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all text-center"
+                className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 active:scale-[0.98] text-white font-black text-sm flex items-center justify-center gap-2.5 shadow-lg shadow-rose-950/40 transition-all text-center"
               >
-                <Phone className="w-5 h-5" />
+                <PhoneCall className="w-5 h-5 stroke-[2.5]" />
                 <span>
                   Appeler {walkSession.contactPhone ? `${walkSession.contactName || 'le Proche'} (${walkSession.contactPhone})` : 'Police Secours (17)'}
                 </span>
               </a>
 
+              {/* Secondary Call Tiles */}
               <div className="grid grid-cols-2 gap-2">
                 <a
                   href="tel:17"
-                  className="py-3 px-3 rounded-2xl bg-red-700/80 hover:bg-red-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+                  className="py-3 px-3 rounded-2xl bg-white/8 hover:bg-white/12 active:scale-95 text-white font-bold text-xs flex items-center justify-center gap-1.5 border border-white/10 transition-all text-center"
                 >
-                  <Phone className="w-4 h-4" /> Police (17)
+                  <Phone className="w-3.5 h-3.5 text-rose-400" /> Police (17)
                 </a>
                 <a
                   href="tel:112"
-                  className="py-3 px-3 rounded-2xl bg-red-700/80 hover:bg-red-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+                  className="py-3 px-3 rounded-2xl bg-white/8 hover:bg-white/12 active:scale-95 text-white font-bold text-xs flex items-center justify-center gap-1.5 border border-white/10 transition-all text-center"
                 >
-                  <Phone className="w-4 h-4" /> Urgences (112)
+                  <Phone className="w-3.5 h-3.5 text-rose-400" /> Urgences (112)
                 </a>
               </div>
 
+              {/* SMS Alert */}
               {walkSession.contactPhone && (
                 <a
                   href={`sms:${walkSession.contactPhone}?body=${encodeURIComponent(
                     `URGENCE SAFETY: Je n'ai pas confirmé mon arrivée à ${walkSession.destinationName}. Ma position en direct: https://maps.google.com/?q=${userLocation ? `${userLocation[0]},${userLocation[1]}` : ''}`
                   )}`}
-                  className="py-3 px-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+                  className="py-3 px-3 rounded-2xl bg-blue-500/15 hover:bg-blue-500/25 active:scale-95 text-blue-300 font-bold text-xs flex items-center justify-center gap-2 border border-blue-500/30 transition-all text-center"
                 >
-                  <MessageSquare className="w-4 h-4" /> SMS Détresse au proche
+                  <MessageSquare className="w-4 h-4 text-blue-400" /> Envoyer SMS SOS au proche
                 </a>
               )}
             </div>
 
-            <div className="flex items-center gap-2 pt-2 border-t border-red-800/80">
+            {/* Bottom Controls: Siren & Safe Dismissal */}
+            <div className="relative z-10 flex items-center gap-2 pt-2 border-t border-white/10">
               <button
                 onClick={toggleWalkSiren}
-                className="flex-1 py-2.5 rounded-xl bg-red-900/60 hover:bg-red-900 text-red-200 text-xs font-bold flex items-center justify-center gap-1.5"
+                className="flex-1 py-3 rounded-2xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 text-xs font-semibold flex items-center justify-center gap-2 transition-all active:scale-95"
               >
-                {walkSession.isSirenActive ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                <span>{walkSession.isSirenActive ? 'Couper la sirène' : 'Activer sirène'}</span>
+                {walkSession.isSirenActive ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-slate-400" />}
+                <span>{walkSession.isSirenActive ? 'Couper sirène' : 'Sirène 110dB'}</span>
               </button>
               <button
                 onClick={() => endWalkSession('idle')}
-                className="flex-1 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold"
+                className="flex-1 py-3 rounded-2xl bg-emerald-600/90 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-950/40 flex items-center justify-center gap-1.5 transition-all active:scale-95"
               >
-                Arrêter l'alerte (Je vais bien)
+                <CheckCircle className="w-4 h-4" />
+                <span>Je vais bien</span>
               </button>
             </div>
           </div>
@@ -343,29 +368,29 @@ export const WalkWithMeSheet: React.FC = () => {
           <div className="flex flex-col gap-4">
             {/* Safety Check Countdown Banner (Prompt before calling emergency) */}
             {walkSession.safetyCheckPending && (
-              <div className="p-4 rounded-3xl bg-amber-500/20 border-2 border-amber-500/60 text-amber-200 flex flex-col gap-3 animate-pulse">
+              <div className="p-4 rounded-3xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex flex-col gap-3 backdrop-blur-md">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Clock className="w-5 h-5 text-amber-400 animate-spin" />
-                    <span className="font-black text-sm">Contrôle de sécurité en cours</span>
+                    <Clock className="w-5 h-5 text-amber-400" />
+                    <span className="font-black text-sm text-white">Contrôle de sécurité en cours</span>
                   </div>
-                  <span className="text-lg font-mono font-black text-amber-400">
+                  <span className="text-base font-mono font-black px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
                     {walkSession.checkDeadlineSeconds}s
                   </span>
                 </div>
-                <p className="text-xs leading-relaxed text-amber-100">
-                  Temps de marche écoulé ! Confirmez votre sécurité ou l'alerte d'urgence et l'appel vers {walkSession.contactPhone || 'le 17'} seront déclenchés automatiquement.
+                <p className="text-xs leading-relaxed text-slate-300">
+                  Temps de marche écoulé. Confirmez votre sécurité ou l'alerte d'urgence et l'appel vers {walkSession.contactPhone || 'le 17'} seront déclenchés automatiquement.
                 </p>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 pt-1">
                   <button
                     onClick={confirmSafetyCheck}
-                    className="flex-1 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-white font-black text-xs shadow-md transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                    className="flex-1 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-md shadow-emerald-950/30 transition-all active:scale-95 flex items-center justify-center gap-1.5"
                   >
                     <CheckCircle className="w-4 h-4" /> Je suis en sécurité
                   </button>
                   <button
                     onClick={triggerWalkAlert}
-                    className="px-3.5 py-3 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs"
+                    className="px-4 py-3 rounded-2xl bg-rose-600/90 hover:bg-rose-600 text-white font-bold text-xs active:scale-95 transition-all"
                   >
                     SOS Immédiat
                   </button>
@@ -416,7 +441,7 @@ export const WalkWithMeSheet: React.FC = () => {
                 onClick={toggleWalkSiren}
                 className={`py-3 px-3 rounded-2xl border font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-95 ${
                   walkSession.isSirenActive
-                    ? 'bg-amber-500 text-white border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] animate-pulse'
+                    ? 'bg-amber-500 text-white border-amber-500 shadow-md ring-1 ring-amber-400'
                     : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
                 }`}
               >

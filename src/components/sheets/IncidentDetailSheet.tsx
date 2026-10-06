@@ -136,7 +136,7 @@ export const IncidentDetailSheet: React.FC = () => {
                   {label}
                 </span>
                 {isVeryRecent && (
-                  <span className="badge bg-s-danger text-white text-[9px] font-black uppercase px-1.5 py-0.5 animate-pulse">
+                  <span className="badge bg-s-danger text-white text-[9px] font-black uppercase px-1.5 py-0.5">
                     En direct
                   </span>
                 )}

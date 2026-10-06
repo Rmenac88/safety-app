@@ -313,7 +313,7 @@ export const DynamicIsland: React.FC = () => {
                 className="flex items-center gap-2 cursor-pointer min-w-0"
               >
                 <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-                  walkSession.status === 'alert' ? 'bg-red-500 text-white animate-pulse' : 'bg-cyan-500/20 text-cyan-400'
+                  walkSession.status === 'alert' ? 'bg-rose-600 text-white shadow-md shadow-rose-950/40' : 'bg-cyan-500/20 text-cyan-400'
                 }`}>
                   <HeartHandshake className="w-4 h-4" />
                 </div>
@@ -339,8 +339,8 @@ export const DynamicIsland: React.FC = () => {
                   }}
                   className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform active:scale-90 ${
                     walkSession.isSirenActive
-                      ? 'bg-red-600 text-white animate-pulse'
-                      : 'bg-red-500/15 text-red-500 hover:bg-red-500/30'
+                      ? 'bg-rose-600 text-white shadow-md shadow-rose-950/40'
+                      : 'bg-rose-500/15 text-rose-500 hover:bg-rose-500/25'
                   }`}
                   title={walkSession.isSirenActive ? "Couper l'alarme" : "Alarme sonore"}
                 >
