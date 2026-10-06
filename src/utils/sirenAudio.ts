@@ -123,7 +123,7 @@ export function playWarningBeep(): void {
     osc.stop(now + 0.6);
 
     setTimeout(() => {
-      try { ctx.close(); } catch {}
+      try { ctx.close(); } catch { /* best effort: ignore */ }
     }, 800);
-  } catch {}
+  } catch { /* best effort: ignore */ }
 }

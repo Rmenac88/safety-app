@@ -1,38 +1,32 @@
 import re
-import html
-from typing import Tuple, Optional
+from typing import Optional
 
 # Prohibited / Dangerous patterns (XSS, Script Injections, Data URIs)
 HTML_TAG_REGEX = re.compile(r'<[^>]*?>', re.IGNORECASE)
 SCRIPT_EVENTS_REGEX = re.compile(r'(on\w+\s*=|javascript:|data:text/html|vbscript:)', re.IGNORECASE)
 
-# Prohibited hate speech, severe harassment, or explicit threat patterns for automated moderation
-REJECT_KEYWORDS = [
-    r'\bmort aux\b', r'\bva mourir\b', r'\battentat imminent\b', r'\bpose(?:r)?\s+une\s+bombe\b',
-    r'\bfollow me on\b', r'\bpromo code\b', r'\bfree money\b', r'\bbit\.ly\b',
-    r'\bbougnoul\w*\b', r'\bprostitu\w*\b', r'\bpute\w*\b', r'\bsalope\w*\b', r'\bmicheton\w*\b',
-    r'\btapin\w*\b', r'\bn[eèé]gre\w*\b', r'\bbicot\w*\b', r'\bbamboula\w*\b', r'\byoupin\w*\b',
-    r'\bchintok\w*\b', r'\bniakou\w*\b', r'\bp[eé]d[eé]\w*\b', r'\bp[eé]dale\w*\b', r'\btarlouze\w*\b',
-]
-REVIEW_KEYWORDS = [
-    r'\barme à feu\b', r'\bkallach\b', r'\bkalach\b', r'\bterroriste\b', r'\bégorger\b'
-]
+# NB: content moderation lives in the `moderation` package (single source of truth).
 
 
 def sanitize_input_text(raw_text: Optional[str], max_length: int = 500) -> str:
     """
     Sanitizes user-provided string against Cross-Site Scripting (XSS),
     HTML injection, and control characters.
+
+    Returns PLAIN TEXT (not HTML-escaped): the frontend renders it through React,
+    which escapes on output. Escaping here too stored "l&#x27;homme" in the database,
+    displayed literally to users and broke apostrophes in street names and moderation.
     """
     if not raw_text:
         return ""
-    
+
     # 1. Remove all control characters except standard whitespace
     cleaned = "".join(ch for ch in raw_text if ch.isprintable() or ch in "\n\r\t ")
-    
-    # 2. Strip HTML tags completely
+
+    # 2. Strip HTML tags completely, then any leftover angle bracket (unclosed tag)
     cleaned = HTML_TAG_REGEX.sub('', cleaned)
-    
+    cleaned = cleaned.replace('<', '').replace('>', '')
+
     # 3. Strip script event handlers and malicious URI schemes
     cleaned = SCRIPT_EVENTS_REGEX.sub('', cleaned)
 
@@ -40,31 +34,5 @@ def sanitize_input_text(raw_text: Optional[str], max_length: int = 500) -> str:
     cleaned = re.sub(r'--+', '', cleaned)
     cleaned = re.sub(r'/\*.*?\*/', '', cleaned)
 
-    # 5. Standard HTML escape for any residual entities
-    cleaned = html.escape(cleaned.strip())
-    
     # 5. Enforce length cap
-    return cleaned[:max_length]
-
-
-def evaluate_content_moderation(title: str, description: Optional[str] = None) -> Tuple[str, str]:
-    """
-    Multi-stage automated content moderation pipeline.
-    Returns (decision, reason):
-      - "ALLOW": Passed all safety checks
-      - "REVIEW": Flagged for moderator scrutiny (published with low trust)
-      - "REJECT": Blocked immediately due to severe violation
-    """
-    combined = f"{title} {description or ''}".lower()
-
-    # 1. Check for immediate rejection triggers (bomb threats, hate speech, spam links)
-    for pattern in REJECT_KEYWORDS:
-        if re.search(pattern, combined, re.IGNORECASE):
-            return "REJECT", "Contenu identifié comme suspect ou non conforme aux règles de sécurité."
-
-    # 2. Check for human-in-the-loop review triggers
-    for pattern in REVIEW_KEYWORDS:
-        if re.search(pattern, combined, re.IGNORECASE):
-            return "REVIEW", "Termes sensibles détectés nécessitant une vérification complémentaire."
-
-    return "ALLOW", "Contenu validé par la modération automatique."
+    return cleaned.strip()[:max_length]

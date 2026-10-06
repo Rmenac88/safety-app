@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useEffectEvent } from 'react';
+import type { LineString } from 'geojson';
 import {
   X, MapPin, Send, EyeOff, CheckCircle2, Loader2, Sparkles,
   ListFilter, AlertTriangle, Navigation, Search, Check,
   Route, Pentagon, Edit3, Trash2, ShieldAlert
 } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import {
   categoryColors, categoryIcons, categoryLabels,
   categoryRecommendedGeometry, defaultSeverity
@@ -12,7 +13,33 @@ import {
 import { reverseGeocode, fetchStreetGeometry, searchPlaces, type GeocodedPlace } from '../../api/geocodingApi';
 import { classifyIncidentText, type ClassifiedIncidentDTO } from '../../api/incidentApi';
 import { evaluateContentModeration } from '../../services/contentModerationService';
-import type { GeometryType, IncidentCategory } from '../../types/safety';
+import type { GeoJSONGeometry, GeometryType, IncidentCategory } from '../../types/safety';
+import { ApiError } from '../../api/client';
+
+/** Representative [lat, lon] of a drawn geometry (point, middle vertex, or ring centroid). */
+function geometryCentroid(geom: GeoJSONGeometry, fallback: [number, number]): [number, number] {
+  if (geom.type === 'Point') {
+    return [geom.coordinates[1], geom.coordinates[0]];
+  }
+  if (geom.type === 'LineString' && geom.coordinates.length > 0) {
+    const mid = geom.coordinates[Math.floor(geom.coordinates.length / 2)];
+    return [mid[1], mid[0]];
+  }
+  if (geom.type === 'Polygon' && geom.coordinates[0]?.length) {
+    const ring = geom.coordinates[0];
+    const sum = ring.reduce((acc, pt) => [acc[0] + pt[1], acc[1] + pt[0]], [0, 0]);
+    return [sum[0] / ring.length, sum[1] / ring.length];
+  }
+  return fallback;
+}
+
+/** A reverse-geocoding job; `id` changes for every new request so stale answers are ignored. */
+interface GeocodeRequest {
+  id: number;
+  coords: [number, number];
+  withStreetGeometry: boolean;
+  keepExisting: boolean;
+}
 
 const CATEGORIES = Object.keys(categoryLabels) as IncidentCategory[];
 
@@ -32,13 +59,13 @@ export const ReportModal: React.FC = () => {
 
   const [inputMode, setInputMode] = useState<'ai_custom' | 'manual'>('ai_custom');
   const [customText, setCustomText] = useState('');
-  const [aiClassification, setAiClassification] = useState<ClassifiedIncidentDTO | null>(null);
-  const [isClassifying, setIsClassifying] = useState(false);
+  // Latest AI classification, keyed by the text it was computed from
+  const [classified, setClassified] = useState<{ text: string; result: ClassifiedIncidentDTO } | null>(null);
 
   const [locationChoice, setLocationChoice] = useState<'gps' | 'custom'>('gps');
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<GeocodedPlace[]>([]);
-  const [isSearchingPlace, setIsSearchingPlace] = useState(false);
+  // Last completed custom address search, keyed by the query it answers
+  const [placeSearch, setPlaceSearch] = useState<{ query: string; places: GeocodedPlace[] }>({ query: '', places: [] });
 
   const [category, setCategory] = useState<IncidentCategory>('danger');
   const [geometryType, setGeometryType] = useState<GeometryType>('Point');
@@ -49,8 +76,10 @@ export const ReportModal: React.FC = () => {
   const [city, setCity] = useState('');
   const [targetCoords, setTargetCoords] = useState<[number, number]>([48.8566, 2.3522]);
   const [isAnonymous, setIsAnonymous] = useState(true);
-  const [isGeocoding, setIsGeocoding] = useState(false);
-  const [streetGeometry, setStreetGeometry] = useState<any | null>(null);
+  const [geocodeRequest, setGeocodeRequest] = useState<GeocodeRequest | null>(null);
+  const [geocodedId, setGeocodedId] = useState<number | null>(null);
+  const isGeocoding = geocodeRequest !== null && geocodedId !== geocodeRequest.id;
+  const [streetGeometry, setStreetGeometry] = useState<LineString | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -59,119 +88,109 @@ export const ReportModal: React.FC = () => {
     message: string;
   } | null>(null);
 
-  const classifyTimerRef = useRef<any>(null);
-
   // Real-time zero-tolerance content moderation evaluation
   const liveModeration = evaluateContentModeration(customText);
 
-  // Automatically lock real-time GPS coordinates on report modal open (skip if user drew custom geometry)
+  // Point the form at new coordinates and (re)fill street / neighborhood / city
+  const locateAt = (coords: [number, number], opts: { withStreetGeometry?: boolean; keepExisting?: boolean } = {}) => {
+    setTargetCoords(coords);
+    setGeocodeRequest((prev) => ({
+      id: (prev?.id ?? 0) + 1,
+      coords,
+      withStreetGeometry: opts.withStreetGeometry ?? false,
+      keepExisting: opts.keepExisting ?? false,
+    }));
+  };
+
+  // Reverse geocoding of the current request (latest request wins)
   useEffect(() => {
-    if (activeModal !== 'report' || completedGeometry) return;
-
-    setLocationChoice('gps');
-
-    const updateFromCoords = async (coords: [number, number]) => {
-      setTargetCoords(coords);
-      setIsGeocoding(true);
+    if (!geocodeRequest) return;
+    let cancelled = false;
+    const { id, coords, withStreetGeometry, keepExisting } = geocodeRequest;
+    (async () => {
       try {
         const g = await reverseGeocode(coords[0], coords[1]);
-        setAddress(g.street);
-        setNeighborhood(g.neighborhood);
-        setCity(g.city);
-
-        if (g.street && g.street !== 'Position GPS' && g.street !== 'Position repérée') {
+        if (cancelled) return;
+        if (!keepExisting || g.street) setAddress(g.street);
+        if (!keepExisting || g.neighborhood) setNeighborhood(g.neighborhood);
+        if (!keepExisting || g.city) setCity(g.city);
+        if (withStreetGeometry && g.street && g.street !== 'Position GPS' && g.street !== 'Position repérée') {
           const geom = await fetchStreetGeometry(g.street, coords[0], coords[1], 600);
-          setStreetGeometry(geom);
+          if (!cancelled) setStreetGeometry(geom);
         }
       } catch (err) {
         console.warn('Geocoding notice:', err);
       } finally {
-        setIsGeocoding(false);
+        if (!cancelled) setGeocodedId(id);
       }
+    })();
+    return () => {
+      cancelled = true;
     };
+  }, [geocodeRequest]);
 
-    if (userLocation) {
-      updateFromCoords(userLocation);
+  // On each opening of the form (without a drawn geometry): start from the GPS position.
+  // Done when the mode switches, not on every GPS tick / map move (that used to overwrite
+  // the address the user had just picked).
+  const gpsMode = activeModal === 'report' && !completedGeometry;
+  const [wasGpsMode, setWasGpsMode] = useState(false);
+  if (gpsMode !== wasGpsMode) {
+    setWasGpsMode(gpsMode);
+    if (gpsMode) {
+      setLocationChoice('gps');
+      if (userLocation) locateAt(userLocation, { withStreetGeometry: true });
     }
+  }
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const fresh: [number, number] = [pos.coords.latitude, pos.coords.longitude];
-          updateFromCoords(fresh);
-        },
-        (err) => {
-          console.warn('[ReportModal] High-accuracy GPS notice:', err.message);
-          // Fallback to network/cell geolocation
-          navigator.geolocation.getCurrentPosition(
-            (pos2) => {
-              const fallbackFresh: [number, number] = [pos2.coords.latitude, pos2.coords.longitude];
-              updateFromCoords(fallbackFresh);
-            },
-            () => {
-              if (!userLocation) {
-                const fallback = selectedLocation ? [selectedLocation.latitude, selectedLocation.longitude] : mapCenter;
-                updateFromCoords(fallback as [number, number]);
-              }
-            },
-            { enableHighAccuracy: false, timeout: 6000, maximumAge: 60000 }
-          );
-        },
-        { enableHighAccuracy: true, timeout: 4000, maximumAge: 15000 }
-      );
-    } else if (!userLocation) {
-      const fallback = selectedLocation ? [selectedLocation.latitude, selectedLocation.longitude] : mapCenter;
-      updateFromCoords(fallback as [number, number]);
-    }
-  }, [activeModal, completedGeometry, userLocation, selectedLocation, mapCenter]);
+  // Then refine with a fresh GPS fix (high accuracy, network fallback, then map position)
+  const onFreshFix = useEffectEvent((coords: [number, number]) => locateAt(coords, { withStreetGeometry: true }));
+  const onNoFix = useEffectEvent(() => {
+    if (userLocation) return;
+    const fallback: [number, number] = selectedLocation
+      ? [selectedLocation.latitude, selectedLocation.longitude]
+      : mapCenter;
+    locateAt(fallback, { withStreetGeometry: true });
+  });
 
-  // When completedGeometry is attached (from MapControls tracer or modal button),
-  // automatically synchronize geometryType, calculate centroid coords, and reverse geocode!
   useEffect(() => {
-    if (activeModal !== 'report' || !completedGeometry) return;
-
-    if (completedGeometry.type === 'LineString' || completedGeometry.type === 'Polygon' || completedGeometry.type === 'Point') {
-      setGeometryType(completedGeometry.type);
+    if (!gpsMode) return;
+    let cancelled = false;
+    if (!navigator.geolocation) {
+      const timer = setTimeout(() => onNoFix(), 0);
+      return () => clearTimeout(timer);
     }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (!cancelled) onFreshFix([pos.coords.latitude, pos.coords.longitude]);
+      },
+      (err) => {
+        console.warn('[ReportModal] High-accuracy GPS notice:', err.message);
+        // Fallback to network/cell geolocation
+        navigator.geolocation.getCurrentPosition(
+          (pos2) => {
+            if (!cancelled) onFreshFix([pos2.coords.latitude, pos2.coords.longitude]);
+          },
+          () => {
+            if (!cancelled) onNoFix();
+          },
+          { enableHighAccuracy: false, timeout: 6000, maximumAge: 60000 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: 4000, maximumAge: 15000 }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [gpsMode]);
 
-    let centerLat = targetCoords[0];
-    let centerLon = targetCoords[1];
-
-    if (completedGeometry.type === 'Point' && Array.isArray(completedGeometry.coordinates)) {
-      centerLon = (completedGeometry.coordinates as any)[0];
-      centerLat = (completedGeometry.coordinates as any)[1];
-    } else if (completedGeometry.type === 'LineString' && Array.isArray(completedGeometry.coordinates) && completedGeometry.coordinates.length > 0) {
-      const mid = completedGeometry.coordinates[Math.floor(completedGeometry.coordinates.length / 2)];
-      centerLon = mid[0];
-      centerLat = mid[1];
-    } else if (completedGeometry.type === 'Polygon' && Array.isArray((completedGeometry.coordinates as any)?.[0])) {
-      const ring = (completedGeometry.coordinates as any)[0];
-      let sumLon = 0;
-      let sumLat = 0;
-      ring.forEach((pt: any) => {
-        sumLon += pt[0];
-        sumLat += pt[1];
-      });
-      centerLon = sumLon / ring.length;
-      centerLat = sumLat / ring.length;
-    }
-
-    const computedCoords: [number, number] = [centerLat, centerLon];
-    setTargetCoords(computedCoords);
-
-    // Reverse geocode this geometry centroid to automatically populate street & area name
-    setIsGeocoding(true);
-    reverseGeocode(centerLat, centerLon)
-      .then((g) => {
-        if (g.street) setAddress(g.street);
-        if (g.neighborhood) setNeighborhood(g.neighborhood);
-        if (g.city) setCity(g.city);
-      })
-      .catch(() => {})
-      .finally(() => {
-        setIsGeocoding(false);
-      });
-  }, [activeModal, completedGeometry]);
+  // When a drawn geometry is attached (from MapControls tracer or modal button):
+  // sync geometryType, move to its centroid and reverse geocode it (once per geometry).
+  const [syncedGeometry, setSyncedGeometry] = useState<GeoJSONGeometry | null>(null);
+  if (activeModal === 'report' && completedGeometry && completedGeometry !== syncedGeometry) {
+    setSyncedGeometry(completedGeometry);
+    setGeometryType(completedGeometry.type);
+    locateAt(geometryCentroid(completedGeometry, targetCoords), { keepExisting: true });
+  }
 
   // Sync recommended geometry when category changes
   const handleCategoryChange = (newCat: IncidentCategory) => {
@@ -184,34 +203,42 @@ export const ReportModal: React.FC = () => {
     setValidationError(null);
   };
 
-  // Autocomplete for custom address search
+  // Autocomplete for custom address search (debounced, keyed by query)
+  const trimmedSearch = searchQuery.trim();
+  const wantsPlaces = locationChoice === 'custom' && trimmedSearch.length >= 2;
+  const isSearchingPlace = wantsPlaces && placeSearch.query !== searchQuery;
+  const searchResults = wantsPlaces && placeSearch.query === searchQuery ? placeSearch.places : [];
+
   useEffect(() => {
-    if (locationChoice !== 'custom' || !searchQuery.trim() || searchQuery.trim().length < 2) {
-      setSearchResults([]);
-      return;
-    }
+    if (!wantsPlaces) return;
+    let cancelled = false;
     const timer = setTimeout(async () => {
-      setIsSearchingPlace(true);
-      const places = await searchPlaces(searchQuery);
-      setSearchResults(places);
-      setIsSearchingPlace(false);
-    }, 250);
-    return () => clearTimeout(timer);
-  }, [searchQuery, locationChoice]);
-
-  // Live NLP text analysis
-  useEffect(() => {
-    if (inputMode !== 'ai_custom' || !customText.trim() || customText.trim().length < 4) {
-      setAiClassification(null);
-      return;
-    }
-
-    clearTimeout(classifyTimerRef.current);
-    setIsClassifying(true);
-    classifyTimerRef.current = setTimeout(async () => {
+      let places: GeocodedPlace[] = [];
       try {
-        const result = await classifyIncidentText(customText.trim());
-        setAiClassification(result);
+        places = await searchPlaces(searchQuery);
+      } catch { /* network error: no results */ }
+      if (!cancelled) setPlaceSearch({ query: searchQuery, places });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, wantsPlaces]);
+
+  // Live NLP text analysis (debounced). The last result stays shown while typing.
+  const trimmedText = customText.trim();
+  const wantsClassification = inputMode === 'ai_custom' && trimmedText.length >= 4;
+  const aiClassification = wantsClassification ? classified?.result ?? null : null;
+  const isClassifying = wantsClassification && classified?.text !== trimmedText;
+
+  useEffect(() => {
+    if (!wantsClassification) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await classifyIncidentText(trimmedText);
+        if (cancelled) return;
+        setClassified({ text: trimmedText, result });
         const mappedCat = result.category as IncidentCategory;
         setCategory(mappedCat);
         setSeverity(result.severity);
@@ -220,13 +247,13 @@ export const ReportModal: React.FC = () => {
         if (rec) setGeometryType(rec.recommended);
       } catch (err) {
         console.warn('NLP error:', err);
-      } finally {
-        setIsClassifying(false);
       }
     }, 320);
-
-    return () => clearTimeout(classifyTimerRef.current);
-  }, [customText, inputMode]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trimmedText, wantsClassification]);
 
   if (activeModal !== 'report' || drawingMode !== 'idle') return null;
 
@@ -236,7 +263,6 @@ export const ReportModal: React.FC = () => {
     setAddress(place.name || place.displayName);
     setNeighborhood(place.neighborhood || '');
     setCity(place.city || '');
-    setSearchResults([]);
     setSearchQuery('');
 
     if (place.streetName || place.name) {
@@ -299,29 +325,9 @@ export const ReportModal: React.FC = () => {
       finalGeomType = 'Point';
     }
 
-    let finalLatitude = targetCoords[0];
-    let finalLongitude = targetCoords[1];
-
-    if (completedGeometry) {
-      if (completedGeometry.type === 'Point' && Array.isArray(completedGeometry.coordinates)) {
-        finalLongitude = (completedGeometry.coordinates as any)[0];
-        finalLatitude = (completedGeometry.coordinates as any)[1];
-      } else if (completedGeometry.type === 'LineString' && Array.isArray(completedGeometry.coordinates) && completedGeometry.coordinates.length > 0) {
-        const mid = completedGeometry.coordinates[Math.floor(completedGeometry.coordinates.length / 2)];
-        finalLongitude = mid[0];
-        finalLatitude = mid[1];
-      } else if (completedGeometry.type === 'Polygon' && Array.isArray((completedGeometry.coordinates as any)?.[0])) {
-        const ring = (completedGeometry.coordinates as any)[0];
-        let sumLon = 0;
-        let sumLat = 0;
-        ring.forEach((pt: any) => {
-          sumLon += pt[0];
-          sumLat += pt[1];
-        });
-        finalLongitude = sumLon / ring.length;
-        finalLatitude = sumLat / ring.length;
-      }
-    }
+    const [finalLatitude, finalLongitude] = completedGeometry
+      ? geometryCentroid(completedGeometry, targetCoords)
+      : targetCoords;
 
     const title =
       aiClassification?.title ||
@@ -352,11 +358,11 @@ export const ReportModal: React.FC = () => {
         setIsSuccess(false);
         setActiveModal(null);
         setCustomText('');
-        setAiClassification(null);
+        setClassified(null);
       }, 280);
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to submit incident:', err);
-      if (err?.isModerationBlocked) {
+      if (err instanceof ApiError && err.isModerationBlocked) {
         hapticFeedback('heavy');
         setModerationBlockedState({
           title: err.moderationTitle || 'Contenu bloqué',

@@ -1,7 +1,14 @@
+import json
+import math
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Any
-from datetime import datetime
+from typing import Optional, List, Any, Literal
+from datetime import datetime, timezone
 from enum import Enum
+
+
+MAX_GEOJSON_CHARS = 50_000
+MAX_GEOJSON_VERTICES = 500
+MAX_POLYGON_RINGS = 10
 
 
 class IncidentCategory(str, Enum):
@@ -32,6 +39,8 @@ class IncidentStatus(str, Enum):
     active = "active"
     resolved = "resolved"
     expired = "expired"
+    blocked = "blocked"
+    pending_moderation = "pending_moderation"
 
 
 # ── Incident Schemas ──────────────────────────────────────────────────────────
@@ -40,15 +49,15 @@ class IncidentCreate(BaseModel):
     category: IncidentCategory
     title: str = Field(..., min_length=2, max_length=200)
     description: Optional[str] = Field(None, max_length=1000)
-    latitude: float = Field(..., ge=-90, le=90)
-    longitude: float = Field(..., ge=-180, le=180)
+    latitude: float = Field(..., ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(..., ge=-180, le=180, allow_inf_nan=False)
     address: Optional[str] = Field(None, max_length=300)
     neighborhood: Optional[str] = Field(None, max_length=200)
     city: Optional[str] = Field(None, max_length=200)
     severity: SeverityLevel = SeverityLevel.medium
     is_anonymous: bool = True
-    author_pseudonym: Optional[str] = "Citoyen anonyme"
-    time_slot_relevance: str = "all"
+    author_pseudonym: Optional[str] = Field("Citoyen anonyme", max_length=100)
+    time_slot_relevance: str = Field("all", max_length=20)
     estimated_duration: str = "2 h"  # "30 min" | "2 h" | "12 h" | "24 h" | "permanent"
     geometry_type: str = "Point"  # "Point" | "LineString" | "Polygon"
     geojson_geometry: Optional[str] = None  # Validated GeoJSON string
@@ -80,49 +89,62 @@ class IncidentCreate(BaseModel):
     @field_validator("geojson_geometry")
     @classmethod
     def validate_geojson_geometry(cls, v: Optional[str]) -> Optional[str]:
+        """
+        Strict GeoJSON validation: only Point / LineString / Polygon, finite numeric
+        coordinates within bounds, every ring checked, bounded size. Anything else is a 422
+        (unknown types used to be stored as-is and broadcast to every client; non-numeric
+        coordinates crashed the validator with a 500).
+        """
         if not v:
             return None
-        import json
+        if len(v) > MAX_GEOJSON_CHARS:
+            raise ValueError(f"geojson_geometry cannot exceed {MAX_GEOJSON_CHARS} characters")
         try:
             data = json.loads(v)
-        except Exception:
+        except ValueError:
             raise ValueError("geojson_geometry must be valid JSON")
-        
+        if not isinstance(data, dict):
+            raise ValueError("geojson_geometry must be a JSON object")
+
         g_type = data.get("type")
         coords = data.get("coordinates")
-        if not g_type or coords is None:
-            raise ValueError("geojson_geometry must have 'type' and 'coordinates'")
+        if g_type not in ("Point", "LineString", "Polygon"):
+            raise ValueError("geojson_geometry type must be Point, LineString or Polygon")
 
-        def check_pt(pt):
+        def check_pt(pt) -> list:
             if not isinstance(pt, (list, tuple)) or len(pt) < 2:
                 raise ValueError("Point must be [lon, lat]")
             lon, lat = pt[0], pt[1]
+            for value in (lon, lat):
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    raise ValueError("Coordinates must be finite numbers")
             if not (-180 <= lon <= 180 and -90 <= lat <= 90):
                 raise ValueError(f"Coordinates out of bounds: {lon}, {lat}")
+            return [float(lon), float(lat)]
+
+        def check_line(points, min_len: int, label: str) -> list:
+            if not isinstance(points, list) or len(points) < min_len:
+                raise ValueError(f"{label} must have at least {min_len} points")
+            if len(points) > MAX_GEOJSON_VERTICES:
+                raise ValueError(f"{label} cannot exceed {MAX_GEOJSON_VERTICES} vertices")
+            return [check_pt(pt) for pt in points]
 
         if g_type == "Point":
-            check_pt(coords)
+            clean = check_pt(coords)
         elif g_type == "LineString":
-            if not isinstance(coords, list) or len(coords) < 2:
-                raise ValueError("LineString must have at least 2 points")
-            if len(coords) > 500:
-                raise ValueError("LineString cannot exceed 500 vertices")
-            for pt in coords:
-                check_pt(pt)
-        elif g_type == "Polygon":
-            if not isinstance(coords, list) or len(coords) < 1:
-                raise ValueError("Polygon must have at least 1 linear ring")
-            outer_ring = coords[0]
-            if not isinstance(outer_ring, list) or len(outer_ring) < 4:
-                raise ValueError("Polygon ring must have at least 4 coordinates")
-            if len(outer_ring) > 500:
-                raise ValueError("Polygon cannot exceed 500 vertices")
-            for pt in outer_ring:
-                check_pt(pt)
-            # Ensure closed ring
-            if outer_ring[0][0] != outer_ring[-1][0] or outer_ring[0][1] != outer_ring[-1][1]:
-                outer_ring.append(outer_ring[0])
-        return json.dumps(data)
+            clean = check_line(coords, 2, "LineString")
+        else:
+            if not isinstance(coords, list) or not (1 <= len(coords) <= MAX_POLYGON_RINGS):
+                raise ValueError(f"Polygon must have between 1 and {MAX_POLYGON_RINGS} rings")
+            clean = [check_line(ring, 4, "Polygon ring") for ring in coords]
+            if sum(len(r) for r in clean) > MAX_GEOJSON_VERTICES:
+                raise ValueError(f"Polygon cannot exceed {MAX_GEOJSON_VERTICES} vertices")
+            for ring in clean:
+                if ring[0] != ring[-1]:
+                    ring.append(ring[0])  # ensure closed ring
+
+        # Re-serialised from validated values only: extra keys / junk are dropped
+        return json.dumps({"type": g_type, "coordinates": clean})
 
 
 class IncidentResponse(BaseModel):
@@ -155,6 +177,13 @@ class IncidentResponse(BaseModel):
     def serialize_id(cls, v: Any) -> str:
         return str(v) if v is not None else ""
 
+    @field_validator("created_at", "expires_at", mode="after")
+    @classmethod
+    def mark_as_utc(cls, v: datetime) -> datetime:
+        # The DB stores naive UTC. Without an explicit offset, browsers parse
+        # "2026-10-06T10:30:00" as LOCAL time (2 h off in France).
+        return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
+
     model_config = {"from_attributes": True}
 
 
@@ -184,12 +213,12 @@ class SafetyScoreResponse(BaseModel):
 # ── Favorite Schemas ──────────────────────────────────────────────────────────
 
 class FavoriteCreate(BaseModel):
-    session_id: str
+    session_id: str = Field(..., min_length=5, max_length=120)
     name: str = Field(..., min_length=1, max_length=200)
-    place_type: str = "other"
-    address: Optional[str] = None
-    latitude: float = Field(..., ge=-90, le=90)
-    longitude: float = Field(..., ge=-180, le=180)
+    place_type: Literal["home", "work", "school", "other"] = "other"
+    address: Optional[str] = Field(None, max_length=300)
+    latitude: float = Field(..., ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(..., ge=-180, le=180, allow_inf_nan=False)
     notify_radius_m: int = Field(500, ge=50, le=5000)
 
 

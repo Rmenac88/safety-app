@@ -1,14 +1,16 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, useEffectEvent } from 'react';
 import {
   Search, X, MapPin, Loader2, History, Clock, Star, AlertTriangle,
   ChevronRight, Bell, Shield, Compass, Sparkles, Trash2, Sliders,
   HeartHandshake, Volume2
 } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { searchPlaces, getSearchHistory, saveSearchToHistory, clearSearchHistory, fetchStreetGeometry } from '../../api/geocodingApi';
 import type { GeocodedPlace } from '../../api/geocodingApi';
 import { categoryColors, categoryIcons, categoryLabels } from '../../design/tokens';
 import { formatExactAgo } from '../../utils/timeAgo';
+import { useNow } from '../../hooks/useNow';
+import type { IncidentDTO } from '../../api/incidentApi';
 
 function haversine(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371000;
@@ -37,8 +39,8 @@ export const DynamicIsland: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'search' | 'alerts' | 'favorites' | 'history'>('search');
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<GeocodedPlace[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  // Last completed search, keyed by the query it answers
+  const [search, setSearch] = useState<{ query: string; places: GeocodedPlace[] }>({ query: '', places: [] });
   const [history, setHistory] = useState<GeocodedPlace[]>([]);
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
   const [livePopAlert, setLivePopAlert] = useState<{
@@ -49,41 +51,46 @@ export const DynamicIsland: React.FC = () => {
     latitude: number;
     longitude: number;
     subtitle?: string;
-    incident?: any;
+    incident?: IncidentDTO;
   } | null>(null);
-  const popTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevIncidentsCountRef = useRef<number>(incidents.length);
+  const [prevIncidentsCount, setPrevIncidentsCount] = useState(incidents.length);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
+
+  const isWalking = !!walkSession && (walkSession.status === 'active' || walkSession.status === 'alert');
+  const now = useNow(1000, isWalking);
+  const walkRemainingMs = walkSession ? Math.max(0, walkSession.targetArrivalTimestamp - now) : 0;
 
   const isDark = filters.mapTileStyle === 'dark';
 
   // Trigger 5-second Apple Dynamic Island Pop when a new incident is detected/reported
-  useEffect(() => {
-    if (incidents.length > prevIncidentsCountRef.current && incidents.length > 0) {
-      const latest = incidents[0];
-      if (latest && !dismissedAlerts.includes(latest.id)) {
-        hapticFeedback('heavy');
-        setLivePopAlert({
-          id: latest.id,
-          title: latest.title,
-          category: latest.category,
-          severity: latest.severity,
-          latitude: latest.latitude,
-          longitude: latest.longitude,
-          subtitle: latest.address || latest.neighborhood || latest.city || 'Nouveau signalement en direct',
-          incident: latest,
-        });
-
-        if (popTimerRef.current) clearTimeout(popTimerRef.current);
-        popTimerRef.current = setTimeout(() => {
-          setLivePopAlert(null);
-        }, 5000); // 5 secondes grand maximum
-      }
+  // (state adjusted during render when the incident count grows: no effect cascade)
+  if (incidents.length !== prevIncidentsCount) {
+    setPrevIncidentsCount(incidents.length);
+    const latest = incidents[0];
+    if (incidents.length > prevIncidentsCount && latest && !dismissedAlerts.includes(latest.id)) {
+      setLivePopAlert({
+        id: latest.id,
+        title: latest.title,
+        category: latest.category,
+        severity: latest.severity,
+        latitude: latest.latitude,
+        longitude: latest.longitude,
+        subtitle: latest.address || latest.neighborhood || latest.city || 'Nouveau signalement en direct',
+        incident: latest,
+      });
     }
-    prevIncidentsCountRef.current = incidents.length;
-  }, [incidents, dismissedAlerts, hapticFeedback]);
+  }
+
+  // Haptic + auto-hide after 5 seconds max for each new pop alert
+  const livePopAlertId = livePopAlert?.id;
+  const buzz = useEffectEvent(() => hapticFeedback('heavy'));
+  useEffect(() => {
+    if (!livePopAlertId) return;
+    buzz();
+    const timer = setTimeout(() => setLivePopAlert(null), 5000);
+    return () => clearTimeout(timer);
+  }, [livePopAlertId]);
 
   // Proximity live threat calculation
   const proximityAlert = useMemo(() => {
@@ -113,37 +120,42 @@ export const DynamicIsland: React.FC = () => {
     return () => document.removeEventListener('mousedown', handler);
   }, [isOpen]);
 
+  const openIsland = (tab: 'search' | 'alerts') => {
+    setHistory(getSearchHistory());
+    setIsOpen(true);
+    setActiveTab(tab);
+  };
+
   // Focus on search input when open
   useEffect(() => {
-    if (isOpen) {
-      setHistory(getSearchHistory());
-      if (activeTab === 'search') {
-        setTimeout(() => inputRef.current?.focus(), 80);
-      }
-    }
+    if (!isOpen || activeTab !== 'search') return;
+    const timer = setTimeout(() => inputRef.current?.focus(), 80);
+    return () => clearTimeout(timer);
   }, [isOpen, activeTab]);
 
-  // Live search debouncing
+  // Live search debouncing (results keyed by query: no stale list, no setState cascade)
+  const trimmedQuery = query.trim();
+  const wantsResults = trimmedQuery.length >= 2;
+  const isSearching = wantsResults && search.query !== query;
+  const results = wantsResults && search.query === query ? search.places : [];
+  const getProximity = useEffectEvent(() => userLocation || undefined);
+
   useEffect(() => {
-    if (!query.trim() || query.trim().length < 2) {
-      setResults([]);
-      setIsSearching(false);
-      return;
-    }
-    abortRef.current?.abort();
+    if (!wantsResults) return;
     const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setIsSearching(true);
     const timer = setTimeout(async () => {
-      const places = await searchPlaces(query, ctrl.signal, userLocation || undefined);
-      setResults(places);
-      setIsSearching(false);
+      try {
+        const places = await searchPlaces(query, ctrl.signal, getProximity());
+        setSearch({ query, places });
+      } catch {
+        if (!ctrl.signal.aborted) setSearch({ query, places: [] });
+      }
     }, 240);
     return () => {
       clearTimeout(timer);
       ctrl.abort();
     };
-  }, [query]);
+  }, [query, wantsResults]);
 
   const handleSelectPlace = useCallback(
     async (place: GeocodedPlace) => {
@@ -151,7 +163,6 @@ export const DynamicIsland: React.FC = () => {
       saveSearchToHistory(place);
       setHistory(getSearchHistory());
       setQuery('');
-      setResults([]);
       setIsOpen(false);
 
       // Cinematic camera descent
@@ -207,8 +218,7 @@ export const DynamicIsland: React.FC = () => {
           onClick={() => {
             if (activeIslandAlert) return;
             hapticFeedback('light');
-            setIsOpen(true);
-            setActiveTab('search');
+            openIsland('search');
           }}
           className={`pointer-events-auto transition-all duration-500 ease-[cubic-bezier(0.34,1.56,0.64,1)] backdrop-blur-2xl shadow-island select-none border relative overflow-hidden ${
             isDark
@@ -247,9 +257,9 @@ export const DynamicIsland: React.FC = () => {
                       <div className={`text-2xs truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
                         {activeIslandAlert.subtitle}
                       </div>
-                    ) : (activeIslandAlert as any).address ? (
+                    ) : ('address' in activeIslandAlert && activeIslandAlert.address) ? (
                       <div className={`text-2xs truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                        {(activeIslandAlert as any).address}
+                        {activeIslandAlert.address}
                       </div>
                     ) : null}
                   </div>
@@ -321,8 +331,8 @@ export const DynamicIsland: React.FC = () => {
                   <div className="text-xs font-black truncate flex items-center gap-1.5 leading-tight">
                     <span>Trajet sécurisé</span>
                     <span className="text-[10px] text-cyan-400 font-mono font-extrabold">
-                      {String(Math.floor(Math.max(0, walkSession.targetArrivalTimestamp - Date.now()) / 60000)).padStart(2, '0')}:
-                      {String(Math.floor((Math.max(0, walkSession.targetArrivalTimestamp - Date.now()) % 60000) / 1000)).padStart(2, '0')}
+                      {String(Math.floor(walkRemainingMs / 60000)).padStart(2, '0')}:
+                      {String(Math.floor((walkRemainingMs % 60000) / 1000)).padStart(2, '0')}
                     </span>
                   </div>
                   <div className="text-[10px] text-slate-400 truncate leading-tight">
@@ -398,8 +408,7 @@ export const DynamicIsland: React.FC = () => {
                   onClick={(e) => {
                     e.stopPropagation();
                     hapticFeedback('light');
-                    setIsOpen(true);
-                    setActiveTab('alerts');
+                    openIsland('alerts');
                   }}
                   className={`relative w-8 h-8 rounded-full flex items-center justify-center transition-colors shrink-0 ${
                     isDark

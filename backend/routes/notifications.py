@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import math
+from datetime import timezone
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -62,8 +63,11 @@ def list_notifications(
         if inc_key in seen_incident_ids:
             continue
 
+        # Distance computed from the PUBLIC (obfuscated) position: computing it from the
+        # exact position let anyone triangulate the reporter's address with 3 requests.
+        pub_lat, pub_lon = obfuscate_public_coordinates(n.latitude, n.longitude, n.id)
         if lat is not None and lon is not None:
-            dist = haversine_km(lat, lon, n.latitude, n.longitude)
+            dist = haversine_km(lat, lon, pub_lat, pub_lon)
             if dist > effective_radius:
                 continue
             distance_km = round(dist, 1)
@@ -71,7 +75,6 @@ def list_notifications(
             distance_km = None
 
         seen_incident_ids.add(inc_key)
-        pub_lat, pub_lon = obfuscate_public_coordinates(n.latitude, n.longitude, n.id)
 
         filtered.append({
             "id": str(n.id),
@@ -84,8 +87,8 @@ def list_notifications(
             "message": n.message,
             "severity": n.severity,
             "category": n.category,
-            "is_read": n.is_read,
-            "created_at": n.created_at.isoformat(),
+            "is_read": False,  # per-device state, handled client-side
+            "created_at": (n.created_at.replace(tzinfo=timezone.utc) if n.created_at.tzinfo is None else n.created_at).isoformat(),
             "distance_km": distance_km,
         })
         if len(filtered) >= limit:
@@ -96,11 +99,13 @@ def list_notifications(
 
 @router.patch("/{notification_id}/read")
 def mark_read(notification_id: str, db: Session = Depends(get_db)):
+    """
+    Read state is per device and kept client-side: notifications are SHARED between all
+    users, so flagging the row as read here marked it as read for everybody.
+    """
     n = db.query(Notification).filter(Notification.id == notification_id).first()
     if not n:
         raise HTTPException(status_code=404, detail="Notification not found")
-    n.is_read = True
-    db.commit()
     return {"status": "ok"}
 
 
@@ -110,7 +115,14 @@ def delete_notification(
     x_admin_key: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
-    """Deletion of a specific notification."""
+    """
+    Deletion of a specific notification (admin only).
+    Notifications are shared: without this check any visitor could erase an alert for
+    every user. Users dismiss alerts locally on their device instead.
+    """
+    if not verify_admin_key(x_admin_key):
+        log_security_event("UNAUTHORIZED_NOTIFICATION_DELETE_ATTEMPT", target_id=notification_id, status="BLOCKED")
+        raise HTTPException(status_code=401, detail="Accès non autorisé : Clé d'administration requise.")
     n = db.query(Notification).filter(Notification.id == notification_id).first()
     if n:
         db.delete(n)

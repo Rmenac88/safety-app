@@ -42,11 +42,12 @@ const RACISM_PATTERNS: RegExp[] = [
   /\bnigga(?:s)?\b/i,
   /\bchintok(?:s)?\b/i,
   /\bniakou[eé](?:s)?\b/i,
-  /\braton(?:s)?\b/i,
+  /\braton(?:s)?\b(?!\s+laveurs?)/i, // not "raton laveur"
   /\bkike(?:s)?\b/i,
   /\bchink(?:s)?\b/i,
   /\bgook(?:s)?\b/i,
-  /\bsale\s+(?:arabe|noir|blanc|juif|feuj|babtou|gwer|gawri|asiatique|chinois|rom|gitan)s?\b/i,
+  // "sale noir" / "sale blanc" excluded: "un pull sale noir" is a normal sentence
+  /\bsale\s+(?:arabe|juif|feuj|babtou|gwer|gawri|asiatique|chinois|rom|gitan)s?\b/i,
   /\bmort\s+aux\s+(?:arabes|noirs|blancs|juifs|musulmans|chretiens|asiatiques|francais|roms|gitans|flics)\b/i,
   /\bheil\s+hitler\b/i,
   /\bsieg\s+heil\b/i,
@@ -60,10 +61,10 @@ const PROSTITUTION_SLANDER_PATTERNS: RegExp[] = [
   /\bpros[t]?ituer\b/i,
   /\btapin(?:er|eur|euse)?s?\b/i,
   /\bmichetonneuse(?:s)?\b/i,
-  /\bescort(?:e|es|s)?\b/i,
+  /\bescort[\s-]?(?:girl|boy)s?\b/i, // "escorte policière" stays allowed
   /\bpute(?:s)?\b/i,
   /\bsalope(?:s)?\b/i,
-  /\bchienne(?:s)?\b/i,
+  /\bsale\s+chienne(?:s)?\b/i, // "une chienne perdue" stays allowed
   /\bgrosse\s+salope(?:s)?\b/i,
   /\bsale\s+pute(?:s)?\b/i,
   /\bbordel\s+de\s+filles?\b/i,
@@ -87,8 +88,9 @@ const HOMOPHOBIA_PATTERNS: RegExp[] = [
 // Direct death threats & mass violence
 const THREAT_PATTERNS: RegExp[] = [
   /\b(?:je\s+vais|on\s+va)\s+(?:te|vous)\s+(?:tuer|fumer|egorger|[eé]gorger|massacrer|crever)\b/i,
-  /\bva\s+mourir\b/i,
-  /\bcr[eèé]ve\b/i,
+  // Second person only: "le blessé va mourir" / "pneu crevé" are legitimate reports
+  /\b(?:tu\s+vas?|vous\s+allez)\s+(?:mourir|crever|y\s+passer)\b/i,
+  /\bcr[eè]ve\s+(?:sale|connard|batard|salope)\b/i,
   /\battentat\s+imminent\b/i,
   /\bpose(?:r)?\s+une\s+bombe\b/i,
   /\bfusillade\s+imminente\b/i,
@@ -99,7 +101,6 @@ const THREAT_PATTERNS: RegExp[] = [
 const COLLAPSED_TRIGGERS: { token: string; category: ModerationViolationCategory }[] = [
   { token: 'bougnoul', category: 'racism' },
   { token: 'salenegre', category: 'racism' },
-  { token: 'negre', category: 'racism' },
   { token: 'nigger', category: 'racism' },
   { token: 'bicot', category: 'racism' },
   { token: 'bamboula', category: 'racism' },
@@ -128,7 +129,13 @@ function normalizeText(raw: string): { clean: string; collapsed: string; leetCol
     .replace(/[\u0300-\u036f]/g, '');
 
   // 2. Remove punctuation, symbols, whitespace to catch "b.o.u.g.n.o.u.l" or "p-u-t-e"
-  const collapsed = clean.replace(/[^a-z0-9]/g, '');
+  //    Benign words containing a trigger are removed first ("salopette" contains "salope").
+  //    NB: no bare "negre" trigger here: "une grève" / "une grêle" collapse to "unegreve".
+  const collapsed = clean
+    .replace(/\bsalopettes?\b/g, ' ')
+    .replace(/[^a-z0-9]/g, '')
+    // stretched letters: "saaaalope" -> "salope"
+    .replace(/(.)\1{2,}/g, '$1');
 
   // 3. Leetspeak mapping
   const leetCollapsed = collapsed

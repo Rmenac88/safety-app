@@ -164,7 +164,7 @@ export function applyPaletteToStyle(
   if (parsed.layers) {
     for (const layer of parsed.layers) {
       if (layer.type === 'background' && layer.paint) {
-        (layer.paint as any)['background-color'] = palette.background;
+        (layer.paint as Record<string, unknown>)['background-color'] = palette.background;
       }
     }
   }

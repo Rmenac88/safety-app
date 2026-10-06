@@ -35,7 +35,7 @@ export function persistIncidents(incidents: Incident[]) {
 
 export function createIncidentRecord(
   data: Omit<Incident, 'id' | 'createdAt' | 'expiresAt' | 'confirmationsCount' | 'disputesCount' | 'reliability' | 'status' | 'author'>,
-  authorInfo: { id: string; pseudonym: string; trustTier: any; isAnonymous: boolean }
+  authorInfo: { id: string; pseudonym: string; trustTier: 'new' | 'contributor' | 'trusted' | 'verified'; isAnonymous: boolean }
 ): Incident {
   const now = new Date();
   let durationHours = 2;

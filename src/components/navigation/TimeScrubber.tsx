@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Clock, RotateCcw, X, Sun, Moon } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 
 export const TimeScrubber: React.FC = () => {
   const { filters, updateFilters, hapticFeedback } = useSafety();

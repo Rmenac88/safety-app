@@ -1,34 +1,28 @@
 import re
 import unicodedata
-from dataclasses import dataclass
-from typing import List, Dict, Set
+from dataclasses import dataclass, field
+from typing import List, Dict
 
 # Zero-width & invisible unicode characters
 ZERO_WIDTH_REGEX = re.compile(
-    r"[\u200B\u200C\u200D\u200E\u200F\uFEFF\u202A\u202B\u202C\u202D\u202E\u00AD\u2060\u2061\u2062\u2063\u2064]"
+    r"[​‌‍‎‏﻿‪‫‬‭‮­⁠⁡⁢⁣⁤]"
 )
 
-# Common homoglyphs mapping (Cyrillic, Greek, Math Alphanumeric to Latin)
+# Visual homoglyphs (Cyrillic / Greek letters that LOOK like Latin letters).
+# Applied after lowercasing, so only lowercase forms are needed.
+# The mapping is visual, not phonetic: Cyrillic "р" looks like "p" (not "r"),
+# "с" looks like "c", "у" looks like "y", "н" looks like a small-caps "h", etc.
 HOMOGLYPHS_MAP: Dict[str, str] = {
-    # Cyrillic lowercase
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh",
-    "з": "z", "и": "i", "й": "i", "і": "i", "ї": "i", "І": "i", "Ї": "i", "ј": "j", "ѕ": "s", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o",
-    "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "х": "x", "ц": "c",
-    "ч": "ch", "ш": "sh", "щ": "sh", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
-    # Cyrillic uppercase
-    "А": "a", "В": "b", "Е": "e", "К": "k", "М": "m", "Н": "h", "О": "o", "Р": "p",
-    "С": "s", "Т": "t", "У": "y", "Х": "x",
+    # Cyrillic
+    "а": "a", "в": "b", "г": "r", "д": "d", "е": "e", "ё": "e", "з": "3",
+    "и": "u", "й": "u", "і": "i", "ї": "i", "ј": "j", "к": "k", "л": "n",
+    "м": "m", "н": "h", "о": "o", "п": "n", "р": "p", "с": "c", "т": "t",
+    "у": "y", "х": "x", "ѕ": "s", "ԁ": "d", "һ": "h", "ӏ": "l", "ԛ": "q",
+    "ԝ": "w", "ь": "b", "ъ": "b",
     # Greek
-    "α": "a", "β": "b", "γ": "g", "δ": "d", "ε": "e", "ζ": "z", "η": "h", "θ": "th",
-    "ι": "i", "κ": "k", "λ": "l", "μ": "m", "ν": "n", "ξ": "x", "ο": "o", "π": "p",
-    "ρ": "r", "σ": "s", "τ": "t", "υ": "u", "φ": "ph", "χ": "ch", "ψ": "ps", "ω": "o",
-    "Α": "a", "Β": "b", "Ε": "e", "Ζ": "z", "Η": "h", "Ι": "i", "Κ": "k", "Μ": "m",
-    "Ν": "n", "Ο": "o", "Ρ": "p", "Τ": "t", "Υ": "u", "Χ": "x",
-    # Common mathematical variants & fullwidth
-    "ａ": "a", "ｂ": "b", "ｃ": "c", "ｄ": "d", "ｅ": "e", "ｆ": "f", "ｇ": "g", "ｈ": "h",
-    "ｉ": "i", "ｊ": "j", "ｋ": "k", "ｌ": "l", "ｍ": "m", "ｎ": "n", "ｏ": "o", "ｐ": "p",
-    "ｑ": "q", "ｒ": "r", "ｓ": "s", "ｔ": "t", "ｕ": "u", "ｖ": "v", "ｗ": "w", "ｘ": "x",
-    "ｙ": "y", "ｚ": "z",
+    "α": "a", "β": "b", "γ": "y", "δ": "d", "ε": "e", "ζ": "z", "η": "n",
+    "ι": "i", "κ": "k", "μ": "u", "ν": "v", "ο": "o", "ρ": "p", "σ": "o",
+    "ς": "c", "τ": "t", "υ": "u", "χ": "x", "ω": "w",
 }
 
 # Standard leetspeak mapping: only digits, symbols, and non-alpha lookalikes to Latin letters
@@ -36,7 +30,7 @@ LEET_MAP: Dict[str, str] = {
     "@": "a", "4": "a", "^": "a",
     "8": "b",
     "(": "c", "<": "c", "[": "c", "{": "c",
-    "3": "e", "&": "e",
+    "3": "e", "&": "e", "€": "e",
     "6": "g", "9": "g",
     "1": "i", "!": "i", "|": "i",
     "0": "o",
@@ -45,7 +39,9 @@ LEET_MAP: Dict[str, str] = {
     "2": "z", "%": "z",
 }
 
-REPEATED_CHARS_REGEX = re.compile(r"(.)\1{2,}", re.IGNORECASE)
+# Elongation: 3+ identical characters ("puuuute", "saaalope", "connnnard")
+ELONGATION_REGEX = re.compile(r"(.)\1{2,}")
+
 
 @dataclass
 class NormalizedBundle:
@@ -57,6 +53,10 @@ class NormalizedBundle:
     collapsed_leet: str
     reduced_text: str
     tokens: List[str]
+    # Every textual variant the regex rules must be evaluated against.
+    regex_variants: List[str] = field(default_factory=list)
+    # Every collapsed (separator-free) variant the substring rules must be evaluated against.
+    collapsed_variants: List[str] = field(default_factory=list)
 
 
 def strip_accents(text: str) -> str:
@@ -72,10 +72,21 @@ def replace_homoglyphs(text: str) -> str:
 
 def decode_leetspeak(text: str) -> str:
     """Converts standard leet patterns into equivalent latin letters."""
-    res = []
-    for c in text:
-        res.append(LEET_MAP.get(c, c))
-    return "".join(res)
+    return "".join(LEET_MAP.get(c, c) for c in text)
+
+
+def _elongation_variants(text: str) -> List[str]:
+    """'puuuute' -> ['puute', 'pute'] : covers both natural double letters and stretched words."""
+    return [ELONGATION_REGEX.sub(r"\1\1", text), ELONGATION_REGEX.sub(r"\1", text)]
+
+
+def _unique(values: List[str]) -> List[str]:
+    seen, out = set(), []
+    for v in values:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
 
 
 def normalize_content(raw_text: str) -> NormalizedBundle:
@@ -84,20 +95,18 @@ def normalize_content(raw_text: str) -> NormalizedBundle:
     Does NOT mutate original_text.
     """
     if not raw_text:
-        return NormalizedBundle("", "", "", "", "", "", "", [])
+        return NormalizedBundle("", "", "", "", "", "", "", [], [], [])
 
     # 1. Strip zero-width & non-printable control characters
     cleaned = ZERO_WIDTH_REGEX.sub("", raw_text)
     cleaned = "".join(c for c in cleaned if c.isprintable() or c in "\n\r\t ")
 
-    # 2. Canonical NFKC normalization
+    # 2. Canonical NFKC normalization (also folds fullwidth / mathematical letters to ASCII)
     nfkc = unicodedata.normalize("NFKC", cleaned)
 
-    # 3. Replace homoglyphs
-    homo_fixed = replace_homoglyphs(nfkc)
-
-    # 4. Strip accents and lowercase
-    no_accents = strip_accents(homo_fixed).lower()
+    # 3. Lowercase BEFORE homoglyph replacement so uppercase Cyrillic/Greek are covered too
+    # 4. Replace homoglyphs, then strip accents
+    no_accents = strip_accents(replace_homoglyphs(nfkc.lower()))
 
     # 5. Decode leetspeak on the lowercased text
     leet_decoded = decode_leetspeak(no_accents)
@@ -107,10 +116,21 @@ def normalize_content(raw_text: str) -> NormalizedBundle:
     collapsed_leet = re.sub(r"[^a-z0-9]", "", leet_decoded)
 
     # 7. Collapse character repetitions (e.g. coooool -> cool, heeeelp -> help)
-    reduced = REPEATED_CHARS_REGEX.sub(r"\1\1", no_accents)
+    reduced = ELONGATION_REGEX.sub(r"\1\1", no_accents)
 
     # 8. Tokenize into normalized words
     tokens = [t for t in re.split(r"[^a-z0-9]+", no_accents) if t]
+
+    regex_variants = _unique(
+        [no_accents.strip(), leet_decoded.strip()]
+        + _elongation_variants(no_accents.strip())
+        + _elongation_variants(leet_decoded.strip())
+    )
+    collapsed_variants = _unique(
+        [collapsed_plain, collapsed_leet]
+        + _elongation_variants(collapsed_plain)
+        + _elongation_variants(collapsed_leet)
+    )
 
     return NormalizedBundle(
         original_text=raw_text,
@@ -121,4 +141,6 @@ def normalize_content(raw_text: str) -> NormalizedBundle:
         collapsed_leet=collapsed_leet,
         reduced_text=reduced.strip(),
         tokens=tokens,
+        regex_variants=regex_variants,
+        collapsed_variants=collapsed_variants,
     )

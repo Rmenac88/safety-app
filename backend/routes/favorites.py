@@ -9,26 +9,38 @@ from models import FavoritePlace
 from schemas import FavoriteCreate, FavoriteResponse
 from security.sanitizer import sanitize_input_text
 from moderation import moderate_text
-from security.anti_abuse import generate_client_fingerprint, check_read_scraping_quota, check_report_creation_quota
+from security.anti_abuse import get_client_ip, hash_client_ip, generate_client_fingerprint, check_read_scraping_quota, check_report_creation_quota
 from security.audit import log_security_event
 
 router = APIRouter(prefix="/favorites", tags=["favorites"])
 
 
+def _owner_session(x_device_id: Optional[str], legacy_session_id: Optional[str]) -> str:
+    """
+    The device id is the only key protecting a user's favorites (home / work addresses):
+    it is read from the X-Device-Id header. The ?session_id= query parameter is still
+    accepted for old clients but must not be used: URLs end up in access logs.
+    """
+    session = sanitize_input_text(x_device_id or legacy_session_id or "", 120)
+    if len(session) < 5:
+        raise HTTPException(status_code=401, detail="Identifiant d'appareil manquant.")
+    return session
+
+
 @router.get("", response_model=List[FavoriteResponse])
 def list_favorites(
     request: Request,
-    session_id: str = Query(..., min_length=5, max_length=120),
+    session_id: Optional[str] = Query(None, max_length=120, deprecated=True),
     x_device_id: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
-    client_ip = request.client.host if request.client else "127.0.0.1"
+    client_ip = get_client_ip(request)
     fp = generate_client_fingerprint(client_ip, x_device_id or "")
-    allowed, retry_after = check_read_scraping_quota(fp)
+    allowed, retry_after = check_read_scraping_quota(fp, db, hash_client_ip(client_ip))
     if not allowed:
         raise HTTPException(status_code=429, detail=f"Quota de requêtes dépassé. Réessayez dans {retry_after}s.")
 
-    clean_session = sanitize_input_text(session_id, 120)
+    clean_session = _owner_session(x_device_id, session_id)
     return db.query(FavoritePlace).filter(FavoritePlace.session_id == clean_session).all()
 
 
@@ -39,9 +51,9 @@ def create_favorite(
     x_device_id: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
-    client_ip = request.client.host if request.client else "127.0.0.1"
+    client_ip = get_client_ip(request)
     fp = generate_client_fingerprint(client_ip, x_device_id or "")
-    allowed, retry_after = check_report_creation_quota(fp)
+    allowed, retry_after = check_report_creation_quota(fp, db, hash_client_ip(client_ip))
     if not allowed:
         raise HTTPException(status_code=429, detail=f"Trop de favoris créés. Réessayez dans {retry_after}s.")
 
@@ -85,10 +97,11 @@ def create_favorite(
 @router.delete("/{favorite_id}", status_code=204)
 def delete_favorite(
     favorite_id: str,
-    session_id: str = Query(...),
+    session_id: Optional[str] = Query(None, max_length=120, deprecated=True),
+    x_device_id: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ):
-    clean_session = sanitize_input_text(session_id, 120)
+    clean_session = _owner_session(x_device_id, session_id)
     fav = db.query(FavoritePlace).filter(
         FavoritePlace.id == favorite_id,
         FavoritePlace.session_id == clean_session

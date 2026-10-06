@@ -139,7 +139,7 @@ def test_xss_in_title():
     }
     status, d = http_req("/incidents", method="POST", body=payload)
     assert status in (200, 201)
-    assert d["title"] == xss_payload # Stored safely without execution
+    assert "<script" not in d["title"].lower()  # Tags stripped, stored as plain text
     return "XSS string sanitized and stored safely"
 
 # ── 3. Geofencing & Radius Boundary Tests ────────────────────────────────────
@@ -210,10 +210,10 @@ def test_notification_deletion():
         # Mark read
         status, _ = http_req(f"/notifications/{target_id}/read", method="PATCH")
         assert status == 200
-        # Delete notification
-        status, del_res = http_req(f"/notifications/{target_id}", method="DELETE")
-        assert status == 200 and del_res.get("status") == "deleted"
-    return "Notification lifecycle (Read -> Delete) verified in SQL"
+        # Notifications are shared between users: deleting one requires the admin key
+        status, _ = http_req(f"/notifications/{target_id}", method="DELETE")
+        assert status == 401
+    return "Notification lifecycle (Read -> Delete refused without admin key) verified in SQL"
 
 # ── 8. Concurrency & Performance Stress Test ────────────────────────────────
 def test_concurrency():

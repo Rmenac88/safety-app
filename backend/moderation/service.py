@@ -39,9 +39,10 @@ class ModerationService:
                     client_fingerprint=client_fingerprint or "unknown",
                     db=db,
                 )
-            except Exception as e:
-                # Never crash the moderation verdict due to an audit write failure
-                pass
+            except Exception:
+                # Never crash the moderation verdict due to an audit write failure,
+                # but never leave the request's DB session in a failed transaction either.
+                db.rollback()
 
         return result
 

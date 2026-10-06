@@ -25,8 +25,8 @@ class ModerationResult(BaseModel):
     detected_categories: List[ModerationCategory] = Field(default_factory=list)
     user_title: Optional[str] = None
     user_message: Optional[str] = None
-    model_version: str = "v2.5.0-ctx"
-    rules_version: str = "2026.09.1"
+    model_version: str = "v2.6.0-ctx"
+    rules_version: str = "2026.10.1"
     
     # Internal metadata (FOR INTERNAL AUDIT LOGGING ONLY, NEVER SENT TO CLIENT!)
     internal_flags: List[str] = Field(default_factory=list)

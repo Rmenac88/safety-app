@@ -1,4 +1,4 @@
-import { api } from './client';
+import { api, coarseCoord } from './client';
 
 export interface NotificationDTO {
   id: string;
@@ -23,8 +23,8 @@ export function fetchNotifications(params?: {
   radius_km?: number;
 }): Promise<NotificationDTO[]> {
   const qs = new URLSearchParams();
-  if (params?.lat !== undefined) qs.set('lat', String(params.lat));
-  if (params?.lon !== undefined) qs.set('lon', String(params.lon));
+  if (params?.lat !== undefined) qs.set('lat', String(coarseCoord(params.lat)));
+  if (params?.lon !== undefined) qs.set('lon', String(coarseCoord(params.lon)));
   if (params?.city) qs.set('city', params.city);
   if (params?.radius_km !== undefined) qs.set('radius_km', String(params.radius_km));
   const q = qs.toString();

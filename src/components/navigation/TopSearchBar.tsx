@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Search, X, MapPin, Loader2, History, Clock, Star, AlertTriangle, Navigation } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { searchPlaces, getSearchHistory, saveSearchToHistory, clearSearchHistory, fetchStreetGeometry } from '../../api/geocodingApi';
 import type { GeocodedPlace } from '../../api/geocodingApi';
 import { parseNaturalQuery, getIntentLabel } from '../../api/nlpParser';
@@ -26,17 +26,15 @@ export const TopSearchBar: React.FC = () => {
 
   const [isFocused, setIsFocused] = useState(false);
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<GeocodedPlace[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  // Last completed geocoding search, keyed by the query it answers
+  const [geoSearch, setGeoSearch] = useState<{ query: string; places: GeocodedPlace[] }>({ query: '', places: [] });
   const [history, setHistory] = useState<GeocodedPlace[]>([]);
-  const [intentLabel, setIntentLabel] = useState<string | null>(null);
-  const [incidentMatches, setIncidentMatches] = useState<typeof filteredIncidents>([]);
   const containerRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    if (isFocused) setHistory(getSearchHistory());
-  }, [isFocused]);
+  const openDropdown = () => {
+    setHistory(getSearchHistory());
+    setIsFocused(true);
+  };
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -48,66 +46,53 @@ export const TopSearchBar: React.FC = () => {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // ── Moteur NLP + Géocodage ────────────────────────────────────────────────
+  // ── Moteur NLP (synchrone, dérivé de la saisie) ──────────────────────────
+  const trimmed = query.trim();
+  const parsed = useMemo(() => (trimmed.length >= 2 ? parseNaturalQuery(trimmed) : null), [trimmed]);
+  const intentLabel = parsed ? getIntentLabel(parsed) : null;
+
+  // Filtrage local des incidents si intent = 'incident'
+  const incidentMatches = useMemo(() => {
+    if (!parsed || parsed.intent !== 'incident') return [];
+    const locNorm = parsed.locationHint.toLowerCase();
+    return filteredIncidents.filter(inc => {
+      const text = `${inc.title} ${inc.category} ${inc.address || ''} ${inc.description || ''}`.toLowerCase();
+      const catMatch = !parsed.categoryHint || inc.category === parsed.categoryHint;
+      const sevMatch = !parsed.severityHint || inc.severity === parsed.severityHint;
+      const locMatch = !locNorm || text.includes(locNorm) ||
+        (inc.address || '').toLowerCase().includes(locNorm);
+      return catMatch && sevMatch && (locMatch || !parsed.locationHint);
+    }).slice(0, 5);
+  }, [parsed, filteredIncidents]);
+
+  // ── Géocodage de la partie lieu extraite par NLP (debounce + abort) ──────
+  const geoQuery = parsed ? (parsed.rawQuery.length >= 2 ? parsed.rawQuery : trimmed) : '';
+  const isSearching = geoQuery !== '' && geoSearch.query !== geoQuery;
+  const results = geoQuery !== '' && geoSearch.query === geoQuery ? geoSearch.places : [];
+
   useEffect(() => {
-    const trimmed = query.trim();
-    if (!trimmed || trimmed.length < 2) {
-      setResults([]);
-      setIsSearching(false);
-      setIntentLabel(null);
-      setIncidentMatches([]);
-      return;
-    }
-
-    // Parsing NLP immédiat (synchrone)
-    const parsed = parseNaturalQuery(trimmed);
-    setIntentLabel(getIntentLabel(parsed));
-
-    // Filtrage local des incidents si intent = 'incident'
-    if (parsed.intent === 'incident') {
-      const matches = filteredIncidents.filter(inc => {
-        const text = `${inc.title} ${inc.category} ${inc.address || ''} ${inc.description || ''}`.toLowerCase();
-        const locNorm = parsed.locationHint.toLowerCase();
-        const catMatch = !parsed.categoryHint || inc.category === parsed.categoryHint;
-        const sevMatch = !parsed.severityHint || inc.severity === parsed.severityHint;
-        const locMatch = !locNorm || text.includes(locNorm) ||
-          (inc.address || '').toLowerCase().includes(locNorm);
-        return catMatch && sevMatch && (locMatch || !parsed.locationHint);
-      });
-      setIncidentMatches(matches.slice(0, 5));
-    } else {
-      setIncidentMatches([]);
-    }
-
-    // Géocodage de la partie lieu extraite par NLP
-    const geoQuery = parsed.rawQuery.length >= 2 ? parsed.rawQuery : trimmed;
-
-    abortRef.current?.abort();
+    if (!geoQuery) return;
     const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setIsSearching(true);
-
     const timer = setTimeout(async () => {
-      const places = await searchPlaces(geoQuery, ctrl.signal);
-      setResults(places);
-      setIsSearching(false);
+      try {
+        const places = await searchPlaces(geoQuery, ctrl.signal);
+        setGeoSearch({ query: geoQuery, places });
+      } catch {
+        if (!ctrl.signal.aborted) setGeoSearch({ query: geoQuery, places: [] });
+      }
     }, 280);
-
     return () => {
       clearTimeout(timer);
       ctrl.abort();
     };
-  }, [query, filteredIncidents]);
+  }, [geoQuery]);
 
   const handleSelectPlace = useCallback(async (place: GeocodedPlace) => {
     hapticFeedback('medium');
     saveSearchToHistory(place);
     setHistory(getSearchHistory());
     setQuery('');
-    setResults([]);
     setIsFocused(false);
-    setIntentLabel(null);
-    setIncidentMatches([]);
 
     setMapCamera({
       center: [place.latitude, place.longitude],
@@ -142,10 +127,7 @@ export const TopSearchBar: React.FC = () => {
   const handleSelectIncident = useCallback((inc: typeof filteredIncidents[0]) => {
     hapticFeedback('medium');
     setQuery('');
-    setResults([]);
     setIsFocused(false);
-    setIntentLabel(null);
-    setIncidentMatches([]);
     setSelectedIncident(inc);
     setSelectedLocation(null);
     setActiveModal(null);
@@ -192,7 +174,7 @@ export const TopSearchBar: React.FC = () => {
         <input
           type="text"
           value={query}
-          onFocus={() => setIsFocused(true)}
+          onFocus={openDropdown}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && query.trim().length >= 2) {
@@ -209,7 +191,7 @@ export const TopSearchBar: React.FC = () => {
         />
         {query && (
           <button
-            onClick={() => { setQuery(''); setResults([]); setIntentLabel(null); hapticFeedback('light'); }}
+            onClick={() => { setQuery(''); hapticFeedback('light'); }}
             className="p-1 rounded-full hover:bg-white/10 text-s-text-3 hover:text-s-text transition-colors shrink-0"
           >
             <X className="w-4 h-4" />

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { X, Navigation, AlertTriangle } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categoryColors, categoryIcons } from '../../design/tokens';
 
 function haversine(lat1: number, lon1: number, lat2: number, lon2: number) {

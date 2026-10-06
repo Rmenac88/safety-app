@@ -1,0 +1,8 @@
+# Direct dependencies (source for the pinned requirements.txt)
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+httpx
+python-multipart
+psycopg2-binary

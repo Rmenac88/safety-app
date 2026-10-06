@@ -3,9 +3,26 @@ export const API_BASE = (import.meta.env.VITE_API_URL as string) ||
     ? 'http://127.0.0.1:8000/api/v1'
     : '/api/v1');
 
+/** Shape of the backend's error bodies (FastAPI `detail`, or the moderation payload itself). */
+interface ModerationErrorDetail {
+  code?: string;
+  title?: string;
+  message?: string;
+}
+
+interface ApiErrorBody extends ModerationErrorDetail {
+  detail?: ModerationErrorDetail | string | unknown[];
+}
+
+/**
+ * User position sent in query strings is rounded to ~110 m (3 decimals): radius-based
+ * features (score, alerts) don't need more, and URLs end up in server access logs.
+ */
+export const coarseCoord = (value: number): number => Math.round(value * 1000) / 1000;
+
 export class ApiError extends Error {
   status: number;
-  data: any;
+  data: ApiErrorBody | null;
 
   constructor(status: number, message: string) {
     super(message);
@@ -18,21 +35,27 @@ export class ApiError extends Error {
     }
   }
 
+  /** `detail` when it is an object (not a validation error list or a plain string) */
+  private get detailObject(): ModerationErrorDetail | undefined {
+    const detail = this.data?.detail;
+    return detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : undefined;
+  }
+
   get isModerationBlocked(): boolean {
     return (
       this.status === 422 &&
-      (this.data?.detail?.code === 'CONTENT_BLOCKED' ||
+      (this.detailObject?.code === 'CONTENT_BLOCKED' ||
         this.data?.code === 'CONTENT_BLOCKED')
     );
   }
 
   get moderationTitle(): string {
-    return this.data?.detail?.title || this.data?.title || 'Contenu bloqué';
+    return this.detailObject?.title || this.data?.title || 'Contenu bloqué';
   }
 
   get moderationMessage(): string {
     return (
-      this.data?.detail?.message ||
+      this.detailObject?.message ||
       this.data?.message ||
       'Cette description contient un contenu qui ne respecte pas les règles de Safety. Modifiez votre description afin de pouvoir publier le signalement.'
     );
@@ -75,7 +98,7 @@ export function saveIncidentOwnerToken(incidentId: string, token: string): void 
     const map = raw ? JSON.parse(raw) : {};
     map[incidentId] = token;
     localStorage.setItem('safety_incident_owner_tokens', JSON.stringify(map));
-  } catch {}
+  } catch { /* best effort: ignore */ }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

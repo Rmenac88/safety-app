@@ -66,7 +66,8 @@ function detectDisplayMode(): DisplayMode {
   if (window.matchMedia('(display-mode: standalone)').matches) return 'standalone';
   if (window.matchMedia('(display-mode: fullscreen)').matches) return 'fullscreen';
   if (window.matchMedia('(display-mode: minimal-ui)').matches) return 'minimal-ui';
-  if ((window.navigator as any).standalone === true) return 'standalone';
+  // iOS Safari home-screen apps expose a non-standard navigator.standalone flag
+  if ((window.navigator as Navigator & { standalone?: boolean }).standalone === true) return 'standalone';
   return 'browser';
 }
 

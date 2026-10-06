@@ -14,11 +14,15 @@ export function useDevice(): DeviceInfo {
     window.addEventListener('orientationchange', update, { passive: true });
 
     // Listen for standalone display mode transitions
-    const matchStandalone = window.matchMedia('(display-mode: standalone)');
+    // Safari < 14 only implements the deprecated addListener/removeListener API
+    const matchStandalone: MediaQueryList & {
+      addListener?: (cb: () => void) => void;
+      removeListener?: (cb: () => void) => void;
+    } = window.matchMedia('(display-mode: standalone)');
     if (matchStandalone.addEventListener) {
       matchStandalone.addEventListener('change', update);
-    } else if ((matchStandalone as any).addListener) {
-      (matchStandalone as any).addListener(update);
+    } else {
+      matchStandalone.addListener?.(update);
     }
 
     return () => {
@@ -26,8 +30,8 @@ export function useDevice(): DeviceInfo {
       window.removeEventListener('orientationchange', update);
       if (matchStandalone.removeEventListener) {
         matchStandalone.removeEventListener('change', update);
-      } else if ((matchStandalone as any).removeListener) {
-        (matchStandalone as any).removeListener(update);
+      } else {
+        matchStandalone.removeListener?.(update);
       }
     };
   }, []);

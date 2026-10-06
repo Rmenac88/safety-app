@@ -1,4 +1,4 @@
-import { api } from './client';
+import { api, coarseCoord } from './client';
 
 export interface SafetyScoreDTO {
   has_sufficient_data: boolean;
@@ -18,6 +18,6 @@ export function fetchSafetyScore(
   radius_m = 600
 ): Promise<SafetyScoreDTO> {
   return api.get<SafetyScoreDTO>(
-    `/score?lat=${lat}&lon=${lon}&radius_m=${radius_m}`
+    `/score?lat=${coarseCoord(lat)}&lon=${coarseCoord(lon)}&radius_m=${radius_m}`
   );
 }

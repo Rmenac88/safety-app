@@ -3,7 +3,7 @@ import {
   X, Check, RotateCcw, Trash2, MapPin,
   Route, Pentagon
 } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categoryLabels, categoryColors } from '../../design/tokens';
 
 export const VectorDrawingControls: React.FC = () => {

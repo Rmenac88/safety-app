@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Query, HTTPException, Request, Header
+from fastapi import APIRouter, Query, HTTPException, Request, Header, Depends
+from sqlalchemy.orm import Session
 from typing import Optional
 import httpx
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from database import get_db
 from security.sanitizer import sanitize_input_text
-from security.anti_abuse import generate_client_fingerprint, check_read_scraping_quota
+from security.anti_abuse import get_client_ip, hash_client_ip, generate_client_fingerprint, check_read_scraping_quota
 
 router = APIRouter(prefix="/geocode", tags=["geocode"])
 
@@ -19,20 +21,22 @@ NOMINATIM_HEADERS = {
 async def geocode_search(
     request: Request,
     q: str = Query(..., min_length=2, max_length=150),
-    x_device_id: Optional[str] = Header(None)
+    x_device_id: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
 ):
     """Proxy to Nominatim search with rate limiting and input sanitization."""
-    client_ip = request.client.host if request.client else "127.0.0.1"
+    client_ip = get_client_ip(request)
     fp = generate_client_fingerprint(client_ip, x_device_id or "")
-    allowed, retry_after = check_read_scraping_quota(fp)
+    allowed, retry_after = check_read_scraping_quota(fp, db, hash_client_ip(client_ip))
     if not allowed:
         raise HTTPException(status_code=429, detail=f"Quota geocode dépassé. Réessayez dans {retry_after}s.")
 
     clean_q = sanitize_input_text(q, 150)
-    url = f"https://nominatim.openstreetmap.org/search?format=json&q={clean_q}&addressdetails=1&limit=6"
+    # Query string built by httpx (URL-encoded): "&", "#"... in q could inject parameters
+    params = {"format": "json", "q": clean_q, "addressdetails": 1, "limit": 6}
     async with httpx.AsyncClient(timeout=8.0) as client:
         try:
-            resp = await client.get(url, headers=NOMINATIM_HEADERS)
+            resp = await client.get("https://nominatim.openstreetmap.org/search", params=params, headers=NOMINATIM_HEADERS)
             resp.raise_for_status()
             return resp.json()
         except httpx.TimeoutException:
@@ -46,12 +50,13 @@ async def geocode_reverse(
     request: Request,
     lat: float = Query(..., ge=-90, le=90),
     lon: float = Query(..., ge=-180, le=180),
-    x_device_id: Optional[str] = Header(None)
+    x_device_id: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
 ):
     """Proxy to Nominatim reverse geocoding with rate limiting."""
-    client_ip = request.client.host if request.client else "127.0.0.1"
+    client_ip = get_client_ip(request)
     fp = generate_client_fingerprint(client_ip, x_device_id or "")
-    allowed, retry_after = check_read_scraping_quota(fp)
+    allowed, retry_after = check_read_scraping_quota(fp, db, hash_client_ip(client_ip))
     if not allowed:
         raise HTTPException(status_code=429, detail=f"Quota geocode dépassé. Réessayez dans {retry_after}s.")
 
@@ -145,15 +150,16 @@ async def get_street_geometry(
     lon: float = Query(..., ge=-180, le=180),
     radius_m: int = Query(600, ge=100, le=2000),
     x_device_id: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
 ):
     """
     Dynamically fetches the exact OSM LineString geometry of a street near given GPS coordinates
     via OpenStreetMap Overpass API, returning GeoJSON.
     Rate-limited and cached.
     """
-    client_ip = request.client.host if request.client else "127.0.0.1"
+    client_ip = get_client_ip(request)
     fp = generate_client_fingerprint(client_ip, x_device_id or "")
-    allowed, retry_after = check_read_scraping_quota(fp)
+    allowed, retry_after = check_read_scraping_quota(fp, db, hash_client_ip(client_ip))
     if not allowed:
         raise HTTPException(status_code=429, detail=f"Quota street-geometry dépassé. Réessayez dans {retry_after}s.")
 
@@ -164,7 +170,8 @@ async def get_street_geometry(
 
     import re
     cleaned_name = re.sub(r"^\d+[\s,]+(bis|ter)?\s*", "", clean_street, flags=re.IGNORECASE).strip()
-    safe_name = cleaned_name.replace('"', '\\"')
+    # Overpass QL string escaping: backslash first, then double quote
+    safe_name = cleaned_name.replace('\\', '\\\\').replace('"', '\\"')
 
     overpass_query = f"""
     [out:json][timeout:8];

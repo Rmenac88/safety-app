@@ -12,6 +12,23 @@ export interface GeocodedPlace {
   importance?: number;
 }
 
+/** Fields of a Nominatim search result used here */
+interface NominatimSearchItem {
+  place_id: number | string;
+  name?: string;
+  display_name: string;
+  lat: string;
+  lon: string;
+  type?: string;
+  importance?: number;
+  address?: {
+    road?: string; pedestrian?: string; street?: string;
+    suburb?: string; neighbourhood?: string; quarter?: string;
+    city?: string; town?: string; village?: string; municipality?: string;
+    country?: string;
+  };
+}
+
 const SEARCH_HISTORY_KEY = 'safety_search_history';
 const CACHE = new Map<string, GeocodedPlace[]>();
 
@@ -48,14 +65,14 @@ export async function searchPlaces(
 
     const data = await res.json();
 
-    const places: GeocodedPlace[] = data.map((item: any) => {
+    const places: GeocodedPlace[] = (data as NominatimSearchItem[]).map((item) => {
       const address = item.address || {};
       const street = address.road || address.pedestrian || address.street;
       const suburb = address.suburb || address.neighbourhood || address.quarter;
       const city = address.city || address.town || address.village || address.municipality;
       const country = address.country;
 
-      let primaryName = item.name || street || suburb || city || item.display_name.split(',')[0];
+      const primaryName = item.name || street || suburb || city || item.display_name.split(',')[0];
 
       return {
         placeId: String(item.place_id),
@@ -74,8 +91,8 @@ export async function searchPlaces(
 
     CACHE.set(cacheKey, places);
     return places;
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
       return [];
     }
     console.warn('Geocoding search failed, falling back to local matches:', err);
@@ -111,7 +128,7 @@ export async function reverseGeocode(
       city: city || address.country || '',
       formatted: data.display_name || 'Coordonnées GPS',
     };
-  } catch (err) {
+  } catch {
     return {
       street: 'Position GPS',
       neighborhood: '',

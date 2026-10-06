@@ -1,12 +1,15 @@
 import React, {
-  createContext, useContext, useState, useEffect, useMemo,
-  useCallback, useRef,
+  useState, useEffect, useLayoutEffect, useMemo,
+  useCallback, useRef, useEffectEvent,
 } from 'react';
+import type { Feature, LineString } from 'geojson';
+import { SafetyContext } from './safetyContextValue';
+import { useNow } from '../hooks/useNow';
 import { fetchIncidents, voteIncidentApi, resolveIncident, deleteIncident, createIncident } from '../api/incidentApi';
 import type { IncidentDTO, CreateIncidentPayload } from '../api/incidentApi';
 import { fetchFavorites, createFavorite, deleteFavorite } from '../api/favoritesApi';
 import type { FavoriteDTO } from '../api/favoritesApi';
-import { fetchNotifications, markNotificationRead, deleteNotificationApi, clearAllNotificationsApi } from '../api/notificationsApi';
+import { fetchNotifications } from '../api/notificationsApi';
 import type { NotificationDTO } from '../api/notificationsApi';
 import { getDeviceId, ApiError } from '../api/client';
 import { evaluateContentModeration } from '../services/contentModerationService';
@@ -25,7 +28,7 @@ export interface SelectedLocation {
   streetName?: string;
   neighborhood?: string;
   city?: string;
-  streetGeometry?: any | null;
+  streetGeometry?: LineString | Feature<LineString> | null;
 }
 
 export interface FilterState {
@@ -50,8 +53,36 @@ function getSessionId(): string {
   return getDeviceId();
 }
 
+// ── Per-device notification state (read / dismissed) ──────────────────────────
+const READ_NOTIFS_KEY = 'safety_read_notifications_v1';
+const DISMISSED_NOTIFS_KEY = 'safety_dismissed_notifications_v1';
+const MAX_STORED_NOTIFICATION_KEYS = 500;
+
+function notificationKey(n: { id: string; incident_id?: string | null }): string {
+  return String(n.incident_id || n.id);
+}
+
+function loadNotificationKeys(storageKey: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    const list = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(list) ? list.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistNotificationKeys(storageKey: string, keys: string[]): void {
+  try {
+    const merged = Array.from(new Set([...loadNotificationKeys(storageKey), ...keys]));
+    localStorage.setItem(storageKey, JSON.stringify(merged.slice(-MAX_STORED_NOTIFICATION_KEYS)));
+  } catch {
+    // storage unavailable (private mode): state simply isn't persisted
+  }
+}
+
 // ── Context Shape ─────────────────────────────────────────────────────────────
-interface SafetyContextType {
+export interface SafetyContextType {
   // Data from API
   incidents: IncidentDTO[];
   filteredIncidents: IncidentDTO[];
@@ -156,8 +187,6 @@ const DEFAULT_FILTERS: FilterState = {
   mapTileStyle: 'light',
 };
 
-// ── Context ────────────────────────────────────────────────────────────────────
-export const SafetyContext = createContext<SafetyContextType | null>(null);
 const LOCAL_INCIDENTS_KEY = 'safety_incidents_active_v1';
 
 function normalizeCoords(lat: number, lon: number): [number, number] {
@@ -191,18 +220,33 @@ const SEED_TITLES = new Set([
   "Secours en intervention",
 ]);
 
-export function isFakeSeedIncident(i: any): boolean {
+function isFakeSeedIncident(i: Pick<IncidentDTO, 'id' | 'title'> | null | undefined): boolean {
   if (!i || !i.title) return true;
   if (SEED_TITLES.has(i.title.trim())) return true;
   if (i.id === 'ln-1' || i.id === 'ln-2' || i.id === 'poly-1') return true;
   return false;
 }
 
+/** True once the incident's own duration is over (the server also expires it on the next fetch). */
+function isExpired(inc: { expires_at?: string }, nowMs: number): boolean {
+  if (!inc.expires_at) return false;
+  const expiresMs = new Date(inc.expires_at).getTime();
+  return Number.isFinite(expiresMs) && expiresMs <= nowMs;
+}
+
+const DURATION_TO_MS: Record<string, number> = {
+  '30 min': 30 * 60_000,
+  '2 h': 2 * 3_600_000,
+  '12 h': 12 * 3_600_000,
+  '24 h': 24 * 3_600_000,
+  permanent: 30 * 24 * 3_600_000,
+};
+
 function loadStoredIncidents(): IncidentDTO[] {
   try {
     // Clear all old legacy versions
     for (let i = 1; i <= 10; i++) {
-      try { localStorage.removeItem(`safety_local_incidents_v${i}`); } catch {}
+      try { localStorage.removeItem(`safety_local_incidents_v${i}`); } catch { /* best effort: ignore */ }
     }
 
     const raw = localStorage.getItem(LOCAL_INCIDENTS_KEY);
@@ -210,7 +254,7 @@ function loadStoredIncidents(): IncidentDTO[] {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       return parsed
-        .filter((i) => i && typeof i.id === 'string' && i.status === 'active' && !isFakeSeedIncident(i))
+        .filter((i) => i && typeof i.id === 'string' && i.status === 'active' && !isFakeSeedIncident(i) && !isExpired(i, Date.now()))
         .map((i) => {
           const [safeLat, safeLon] = normalizeCoords(i.latitude, i.longitude);
           return { ...i, latitude: safeLat, longitude: safeLon };
@@ -225,7 +269,7 @@ function loadStoredIncidents(): IncidentDTO[] {
 function saveStoredIncidents(list: IncidentDTO[]) {
   try {
     localStorage.setItem(LOCAL_INCIDENTS_KEY, JSON.stringify(list));
-  } catch {}
+  } catch { /* best effort: ignore */ }
 }
 
 export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -235,7 +279,12 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [incidents, setIncidents] = useState<IncidentDTO[]>(loadStoredIncidents);
   const [favorites, setFavorites] = useState<FavoriteDTO[]>([]);
   const [notifications, setNotifications] = useState<NotificationDTO[]>([]);
-  const [isLoadingIncidents, setIsLoadingIncidents] = useState(false);
+  const notificationsRef = useRef<NotificationDTO[]>([]);
+  useEffect(() => {
+    notificationsRef.current = notifications;
+  }, [notifications]);
+  // true until the first fetch completes; then only while a manual refresh is running
+  const [isLoadingIncidents, setIsLoadingIncidents] = useState(true);
   const [myIncidentIds, setMyIncidentIds] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem('safety_my_incident_ids_v1');
@@ -248,7 +297,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const saveMyIncidentIds = (ids: string[]) => {
     try {
       localStorage.setItem('safety_my_incident_ids_v1', JSON.stringify(ids));
-    } catch {}
+    } catch { /* best effort: ignore */ }
   };
 
   // ── Map State ────────────────────────────────────────────────────────────
@@ -342,12 +391,15 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setNotificationRadiusKmState(capped);
   }, []);
 
+  // Latest values for stable callbacks/timers (synced right after each commit)
   const userLocationRef = useRef(userLocation);
-  userLocationRef.current = userLocation;
   const mapCenterRef = useRef(mapCenter);
-  mapCenterRef.current = mapCenter;
   const notificationRadiusKmRef = useRef(notificationRadiusKm);
-  notificationRadiusKmRef.current = notificationRadiusKm;
+  useLayoutEffect(() => {
+    userLocationRef.current = userLocation;
+    mapCenterRef.current = mapCenter;
+    notificationRadiusKmRef.current = notificationRadiusKm;
+  }, [userLocation, mapCenter, notificationRadiusKm]);
 
   // ── Fetch Notifications (stable reference, reads latest via refs) ───────────
   const refreshNotifications = useCallback(() => {
@@ -360,19 +412,22 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     })
       .then((data) => {
         if (Array.isArray(data)) {
+          const dismissed = loadNotificationKeys(DISMISSED_NOTIFS_KEY);
+          const read = loadNotificationKeys(READ_NOTIFS_KEY);
           setNotifications((prev) => {
             const readMap = new Map<string, boolean>();
             prev.forEach((n) => {
-              if (n.is_read) readMap.set(String(n.incident_id || n.id), true);
+              if (n.is_read) readMap.set(notificationKey(n), true);
             });
 
             const uniqueMap = new Map<string, NotificationDTO>();
             data.forEach((n) => {
-              const key = String(n.incident_id || n.id);
+              const key = notificationKey(n);
+              if (dismissed.has(key)) return;
               if (!uniqueMap.has(key)) {
                 uniqueMap.set(key, {
                   ...n,
-                  is_read: n.is_read || readMap.get(key) || false,
+                  is_read: n.is_read || read.has(key) || readMap.get(key) || false,
                 });
               }
             });
@@ -390,18 +445,23 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [refreshNotifications]);
 
 
+  // Notifications are shared by every user on the server: read / dismissed state is kept
+  // per device (localStorage). Deleting server-side used to remove the alert for everyone,
+  // and "clear all" always failed (admin-only endpoint) without emptying the list.
   const markAsRead = useCallback(async (id: string) => {
-    await markNotificationRead(id);
+    const target = notificationsRef.current.find(n => n.id === id);
+    if (target) persistNotificationKeys(READ_NOTIFS_KEY, [notificationKey(target)]);
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
   }, []);
 
   const deleteNotification = useCallback(async (id: string) => {
-    await deleteNotificationApi(id);
+    const target = notificationsRef.current.find(n => n.id === id);
+    if (target) persistNotificationKeys(DISMISSED_NOTIFS_KEY, [notificationKey(target)]);
     setNotifications(prev => prev.filter(n => n.id !== id));
   }, []);
 
   const clearAllNotifications = useCallback(async () => {
-    await clearAllNotificationsApi();
+    persistNotificationKeys(DISMISSED_NOTIFS_KEY, notificationsRef.current.map(notificationKey));
     setNotifications([]);
   }, []);
 
@@ -432,10 +492,10 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // ── Fetch incidents from real API (Backend is the single source of truth) ───
   const fetchRef = useRef<AbortController | null>(null);
 
-  const refreshIncidents = useCallback(async () => {
+  // Quiet sync used by polling, focus, cross-tab events and after mutations
+  const syncIncidents = useCallback(async () => {
     fetchRef.current?.abort();
     fetchRef.current = new AbortController();
-    setIsLoadingIncidents(true);
     try {
       const data = await fetchIncidents({ status: 'active' });
       if (data && Array.isArray(data.incidents)) {
@@ -474,14 +534,20 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           return { ...prevSelected, ...fresh, latitude: safeLat, longitude: safeLon };
         });
       }
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
         console.warn('Incident fetch notice:', err);
       }
     } finally {
       setIsLoadingIncidents(false);
     }
   }, []);
+
+  // Manual refresh (buttons): same sync, with the loading spinner
+  const refreshIncidents = useCallback(() => {
+    setIsLoadingIncidents(true);
+    syncIncidents();
+  }, [syncIncidents]);
 
   // Cross-tab broadcast channel for instantaneous 0ms sync on same device
   const syncChannelRef = useRef<BroadcastChannel | null>(null);
@@ -490,24 +556,28 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const ch = new BroadcastChannel('safety_instant_sync');
       ch.onmessage = (ev) => {
         if (ev.data?.type === 'REFRESH_INCIDENTS') {
-          refreshIncidents();
+          syncIncidents();
         }
       };
       syncChannelRef.current = ch;
       return () => {
-        try { ch.close(); } catch {}
+        try { ch.close(); } catch { /* best effort: ignore */ }
       };
     }
-  }, [refreshIncidents]);
+  }, [syncIncidents]);
 
   // Load on mount + rapid 4s polling for multi-user live sync + trigger on app focus
+  // (the fetch is async: incidents state only changes when the response arrives)
+  const pollIncidents = useEffectEvent(() => {
+    syncIncidents();
+  });
   useEffect(() => {
-    refreshIncidents();
-    const interval = setInterval(refreshIncidents, 4_000);
+    const firstLoad = setTimeout(() => pollIncidents(), 0);
+    const interval = setInterval(() => pollIncidents(), 4_000);
 
     const handleWakeup = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        refreshIncidents();
+        pollIncidents();
       }
     };
     window.addEventListener('focus', handleWakeup);
@@ -515,47 +585,46 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     document.addEventListener('visibilitychange', handleWakeup);
 
     return () => {
+      clearTimeout(firstLoad);
       clearInterval(interval);
       window.removeEventListener('focus', handleWakeup);
       window.removeEventListener('online', handleWakeup);
       document.removeEventListener('visibilitychange', handleWakeup);
       fetchRef.current?.abort();
     };
-  }, [refreshIncidents]);
+  }, []);
 
   // ── Deep Linking: ?incident=<id> ──────────────────────────────────────────
-  const deepLinkProcessedRef = useRef(false);
-  useEffect(() => {
-    if (deepLinkProcessedRef.current || incidents.length === 0) return;
-    if (typeof window === 'undefined') return;
-
+  // Applied during render as soon as the incident is known (once), no effect cascade.
+  const [pendingDeepLinkId, setPendingDeepLinkId] = useState<string | null>(() => {
     try {
-      const params = new URLSearchParams(window.location.search);
-      const incidentId = params.get('incident');
-      if (incidentId) {
-        const found = incidents.find(i => i.id === incidentId);
-        if (found) {
-          deepLinkProcessedRef.current = true;
-          setSelectedIncident(found);
-          setMapCenterState([found.latitude, found.longitude]);
-          setMapZoomState(16.5);
-          setMapPitchState(0);
-          hapticFeedback('medium');
-        }
-      }
-    } catch {}
-  }, [incidents, hapticFeedback]);
+      return typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('incident');
+    } catch {
+      return null;
+    }
+  });
+  if (pendingDeepLinkId) {
+    const found = incidents.find(i => i.id === pendingDeepLinkId);
+    if (found) {
+      setPendingDeepLinkId(null);
+      setSelectedIncident(found);
+      setMapCenterState([found.latitude, found.longitude]);
+      setMapZoomState(16.5);
+      setMapPitchState(0);
+    }
+  }
 
   // ── Fetch favorites ───────────────────────────────────────────────────────
+  // (the owner is the device id, sent as the X-Device-Id header by the API client)
   useEffect(() => {
-    fetchFavorites(sessionId)
+    fetchFavorites()
       .then(setFavorites)
       .catch(() => setFavorites([]));
-  }, [sessionId]);
+  }, []);
 
   // ── GPS Ref & Multi-Stage Resilient Acquisition ────────────────────────────
   const watchIdRef = useRef<number | null>(null);
-  const locatingTimeoutRef = useRef<any>(null);
+  const locatingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const applyGpsPosition = useCallback(
     (pos: GeolocationPosition, silent = false, forceRecenter = true) => {
@@ -611,7 +680,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 () => {},
                 { enableHighAccuracy: true, maximumAge: 0 }
               );
-            } catch {}
+            } catch { /* best effort: ignore */ }
           }
         },
         (err) => {
@@ -647,7 +716,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (watchIdRef.current !== null) {
         try {
           navigator.geolocation.clearWatch(watchIdRef.current);
-        } catch {}
+        } catch { /* best effort: ignore */ }
         watchIdRef.current = null;
       }
       if (locatingTimeoutRef.current) {
@@ -661,9 +730,12 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   useEffect(() => {
     if (typeof window === 'undefined' || !navigator.geolocation) return;
 
-    if (navigator.permissions && navigator.permissions.query) {
-      navigator.permissions
-        .query({ name: 'geolocation' as PermissionName })
+    // Permissions API when available; otherwise straight to a silent locate (same async path)
+    const permission: Promise<PermissionStatus> = navigator.permissions?.query
+      ? navigator.permissions.query({ name: 'geolocation' as PermissionName })
+      : Promise.reject(new Error('Permissions API unavailable'));
+    {
+      permission
         .then((status) => {
           if (status.state === 'granted') {
             requestUserLocation({ silent: true, forceRecenter: true });
@@ -682,8 +754,6 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         .catch(() => {
           requestUserLocation({ silent: true, forceRecenter: false });
         });
-    } else {
-      requestUserLocation({ silent: true, forceRecenter: false });
     }
   }, [requestUserLocation]);
 
@@ -725,10 +795,12 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   // ── Filtered Incidents ────────────────────────────────────────────────────
+  // Ticks every 30 s so expired / no-longer-live incidents leave the map on their own
+  const nowMs = useNow(30_000);
   const filteredIncidents = useMemo(() => {
-    const nowMs = Date.now();
     return incidents.filter((inc) => {
       if (inc.status !== 'active') return false;
+      if (isExpired(inc, nowMs)) return false;
       // If category is toggled off (hidden by user), hide it from map
       if (filters.hiddenCategories && filters.hiddenCategories.includes(inc.category)) return false;
       if (filters.selectedCategories.length > 0 && !filters.selectedCategories.includes(inc.category)) return false;
@@ -739,7 +811,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (filters.onlyLive && nowMs - new Date(inc.created_at).getTime() > 3_600_000) return false;
       return true;
     });
-  }, [incidents, filters]);
+  }, [incidents, filters, nowMs]);
 
   // ── Incident mutations ────────────────────────────────────────────────────
   const submitIncident = useCallback(async (payload: CreateIncidentPayload) => {
@@ -787,9 +859,9 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         hapticFeedback('success');
         refreshNotifications();
       }
-    } catch (apiErr: any) {
+    } catch (apiErr) {
       // If content was blocked by moderation, strictly rethrow and NEVER publish to local state/map!
-      if (apiErr?.isModerationBlocked) {
+      if (apiErr instanceof ApiError && apiErr.isModerationBlocked) {
         throw apiErr;
       }
 
@@ -815,7 +887,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           geometry_type: payload.geometry_type || 'Point',
           geojson_geometry: payload.geojson_geometry,
           created_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 24 * 3600000).toISOString(),
+          expires_at: new Date(Date.now() + (DURATION_TO_MS[payload.estimated_duration || '2 h'] ?? DURATION_TO_MS['2 h'])).toISOString(),
           estimated_duration: payload.estimated_duration || '2 h',
           time_slot_relevance: 'all',
         };
@@ -848,7 +920,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const saveUserVotes = (votes: Record<string, 'confirm' | 'dispute'>) => {
     try {
       localStorage.setItem('safety_user_votes_v1', JSON.stringify(votes));
-    } catch {}
+    } catch { /* best effort: ignore */ }
   };
 
   const handleConfirm = useCallback(async (id: string) => {
@@ -968,11 +1040,11 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     try {
       await resolveIncident(id);
       syncChannelRef.current?.postMessage({ type: 'REFRESH_INCIDENTS' });
-      refreshIncidents();
+      syncIncidents();
     } catch (e) {
       console.warn('Resolve fallback notice:', e);
     }
-  }, [hapticFeedback, refreshIncidents]);
+  }, [hapticFeedback, syncIncidents]);
 
   const handleDelete = useCallback(async (id: string) => {
     hapticFeedback('heavy');
@@ -989,11 +1061,11 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (selectedIncident?.id === id) setSelectedIncident(null);
     try {
       await deleteIncident(id);
-      refreshIncidents();
+      syncIncidents();
     } catch (e) {
       console.warn('Delete fallback notice:', e);
     }
-  }, [hapticFeedback, selectedIncident, refreshIncidents]);
+  }, [hapticFeedback, selectedIncident, syncIncidents]);
 
   // ── Favorites ─────────────────────────────────────────────────────────────
   const addFavorite = useCallback(async (params: {
@@ -1015,9 +1087,9 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const removeFavorite = useCallback(async (id: string) => {
     setFavorites((prev) => prev.filter((f) => f.id !== id));
-    await deleteFavorite(id, sessionId);
+    await deleteFavorite(id);
     hapticFeedback('light');
-  }, [sessionId, hapticFeedback]);
+  }, [hapticFeedback]);
 
   // ── Walk With Me (Mode Trajet Sécurisé) State & Engine ─────────────────────
   const [walkSession, setWalkSession] = useState<WalkSession | null>(null);
@@ -1116,12 +1188,12 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [hapticFeedback]);
 
-  // Live countdown & arrival watcher
-  useEffect(() => {
-    if (!walkSession || walkSession.status !== 'active') return;
-
-    const interval = setInterval(() => {
-      setWalkSession((prev) => {
+  // Live countdown & arrival watcher.
+  // Runs once per second as an effect event: the side effects (siren, notifications,
+  // emergency call) used to live inside a setState updater, which React may invoke twice
+  // (always in StrictMode dev) -> the emergency call could fire twice.
+  const walkTick = useEffectEvent(() => {
+    const next = ((prev: WalkSession | null): WalkSession | null => {
         if (!prev || prev.status !== 'active') return prev;
 
         const now = Date.now();
@@ -1157,7 +1229,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             const emergencyPhone = prev.contactPhone?.trim() || '17';
             try {
               window.location.href = `tel:${emergencyPhone}`;
-            } catch {}
+            } catch { /* best effort: ignore */ }
 
             try {
               if ('Notification' in window && Notification.permission === 'granted') {
@@ -1167,7 +1239,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                   tag: 'safety-sos-triggered',
                 });
               }
-            } catch {}
+            } catch { /* best effort: ignore */ }
 
             return {
               ...prev,
@@ -1193,7 +1265,7 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 tag: 'safety-arrival-check',
               });
             }
-          } catch {}
+          } catch { /* best effort: ignore */ }
 
           return {
             ...prev,
@@ -1203,11 +1275,16 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
 
         return prev;
-      });
-    }, 1000);
+    })(walkSession);
+    if (next !== walkSession) setWalkSession(next);
+  });
 
+  const walkStatus = walkSession?.status;
+  useEffect(() => {
+    if (walkStatus !== 'active') return;
+    const interval = setInterval(() => walkTick(), 1000);
     return () => clearInterval(interval);
-  }, [walkSession?.status, hapticFeedback]);
+  }, [walkStatus]);
 
   return (
     <SafetyContext.Provider value={{
@@ -1236,8 +1313,3 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   );
 };
 
-export const useSafety = () => {
-  const ctx = useContext(SafetyContext);
-  if (!ctx) throw new Error('useSafety must be used within SafetyProvider');
-  return ctx;
-};

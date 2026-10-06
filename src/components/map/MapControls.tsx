@@ -1,6 +1,6 @@
 import React from 'react';
 import { Navigation, Moon, Sun, AlertTriangle, Globe, Box } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 
 export const MapControls: React.FC = () => {
   const {

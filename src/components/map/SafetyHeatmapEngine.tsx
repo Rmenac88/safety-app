@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback, useEffectEvent } from 'react';
+import type { Feature, FeatureCollection, Geometry, LineString, Point, Polygon, Position } from 'geojson';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { X, Navigation2, Compass, Plus, Minus, Box, Sparkles } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categorySvgPaths } from '../../design/tokens';
 
 const MAPBOX_TOKEN = (import.meta.env.VITE_MAPBOX_TOKEN as string) || [
@@ -12,7 +13,7 @@ const MAPBOX_TOKEN = (import.meta.env.VITE_MAPBOX_TOKEN as string) || [
 ].join('.');
 
 // ── Swiss Thermal Instrument Classification & Deterministic Colors ──────────
-export interface ThermalCategoryConfig {
+interface ThermalCategoryConfig {
   weight: number;
   color: string;       // Primary thermal hue
   glowColor: string;   // Outer radiant aura
@@ -20,7 +21,7 @@ export interface ThermalCategoryConfig {
   label: string;
 }
 
-export const THERMAL_CATEGORY_SPECTRUM: Record<string, ThermalCategoryConfig> = {
+const THERMAL_CATEGORY_SPECTRUM: Record<string, ThermalCategoryConfig> = {
   // 1. Incandescent White-Hot & Crimson Core (Critique - 100%)
   danger:     { weight: 5.0, color: '#FFFFFF', glowColor: '#EF4444', tier: 'Critique', label: 'Danger Majeur' },
   violence:   { weight: 5.0, color: '#FFFFFF', glowColor: '#DC2626', tier: 'Critique', label: 'Violence' },
@@ -74,9 +75,9 @@ export const SafetyHeatmapEngine: React.FC = () => {
         !isNaN(inc.longitude)
     );
 
-    const heatFeatures: any[] = [];
-    const lineFeatures: any[] = [];
-    const polyFeatures: any[] = [];
+    const heatFeatures: Feature<Point>[] = [];
+    const lineFeatures: Feature<LineString>[] = [];
+    const polyFeatures: Feature<Polygon>[] = [];
 
     validIncidents.forEach((inc) => {
       const thermalMeta = THERMAL_CATEGORY_SPECTRUM[inc.category] || THERMAL_CATEGORY_SPECTRUM.other;
@@ -106,13 +107,13 @@ export const SafetyHeatmapEngine: React.FC = () => {
       });
 
       // Parse vector geometry if present (LineString or Polygon)
-      let parsedGeom: any = null;
+      let parsedGeom: Geometry | null = null;
       if (inc.geojson_geometry) {
         try {
           parsedGeom = typeof inc.geojson_geometry === 'string'
-            ? JSON.parse(inc.geojson_geometry)
+            ? (JSON.parse(inc.geojson_geometry) as Geometry)
             : inc.geojson_geometry;
-        } catch {}
+        } catch { /* best effort: ignore */ }
       }
 
       if (parsedGeom) {
@@ -123,7 +124,7 @@ export const SafetyHeatmapEngine: React.FC = () => {
             properties: baseProps,
           });
           // Sample intermediate points along the line so the thermal heat halo follows the entire street
-          parsedGeom.coordinates.forEach((coord: [number, number], idx: number) => {
+          parsedGeom.coordinates.forEach((coord: Position, idx: number) => {
             if (idx > 0) {
               heatFeatures.push({
                 type: 'Feature',
@@ -141,7 +142,7 @@ export const SafetyHeatmapEngine: React.FC = () => {
           // Sample perimeter points for uniform polygon heat glow
           const ring = parsedGeom.coordinates[0];
           if (Array.isArray(ring)) {
-            ring.forEach((coord: [number, number]) => {
+            ring.forEach((coord: Position) => {
               heatFeatures.push({
                 type: 'Feature',
                 geometry: { type: 'Point', coordinates: coord },
@@ -153,13 +154,28 @@ export const SafetyHeatmapEngine: React.FC = () => {
       }
     });
 
+    const collection = <G extends Geometry>(features: Feature<G>[]): FeatureCollection<G> => ({
+      type: 'FeatureCollection',
+      features,
+    });
+
     return {
-      heatmapPointsGeoJSON: { type: 'FeatureCollection', features: heatFeatures },
-      vectorLinesGeoJSON: { type: 'FeatureCollection', features: lineFeatures },
-      vectorPolysGeoJSON: { type: 'FeatureCollection', features: polyFeatures },
+      heatmapPointsGeoJSON: collection(heatFeatures),
+      vectorLinesGeoJSON: collection(lineFeatures),
+      vectorPolysGeoJSON: collection(polyFeatures),
       activeIncidentsList: validIncidents,
     };
   }, [incidents]);
+
+  // Values read once by the map initialisation (latest at the time it runs)
+  const getInitialCenter = useEffectEvent((): [number, number] => (
+    userLocation ? [userLocation[1], userLocation[0]] : [mapCenter[1], mapCenter[0]]
+  ));
+  const getCurrentData = useEffectEvent(() => ({
+    points: heatmapPointsGeoJSON,
+    lines: vectorLinesGeoJSON,
+    polys: vectorPolysGeoJSON,
+  }));
 
   // ── Initialize Mapbox Heatmap Globe ──────────────────────────────────────
   useEffect(() => {
@@ -167,9 +183,7 @@ export const SafetyHeatmapEngine: React.FC = () => {
 
     mapboxgl.accessToken = MAPBOX_TOKEN;
 
-    const initialCenter: [number, number] = userLocation
-      ? [userLocation[1], userLocation[0]]
-      : [mapCenter[1], mapCenter[0]];
+    const initialCenter = getInitialCenter();
 
     const map = new mapboxgl.Map({
       container: containerRef.current,
@@ -197,17 +211,18 @@ export const SafetyHeatmapEngine: React.FC = () => {
       });
 
       // 2. Add Sources: Points, Lines, and Polygons
+      const data = getCurrentData();
       map.addSource('safety-heat-points-source', {
         type: 'geojson',
-        data: heatmapPointsGeoJSON as any,
+        data: data.points,
       });
       map.addSource('safety-heat-lines-source', {
         type: 'geojson',
-        data: vectorLinesGeoJSON as any,
+        data: data.lines,
       });
       map.addSource('safety-heat-polys-source', {
         type: 'geojson',
-        data: vectorPolysGeoJSON as any,
+        data: data.polys,
       });
 
       // 3. Vector Polygon Thermal Layers (Glowing fill & neon contour)
@@ -332,9 +347,9 @@ export const SafetyHeatmapEngine: React.FC = () => {
     const lnSrc = mapRef.current.getSource('safety-heat-lines-source') as mapboxgl.GeoJSONSource | undefined;
     const plSrc = mapRef.current.getSource('safety-heat-polys-source') as mapboxgl.GeoJSONSource | undefined;
 
-    if (ptSrc) ptSrc.setData(heatmapPointsGeoJSON as any);
-    if (lnSrc) lnSrc.setData(vectorLinesGeoJSON as any);
-    if (plSrc) plSrc.setData(vectorPolysGeoJSON as any);
+    if (ptSrc) ptSrc.setData(heatmapPointsGeoJSON);
+    if (lnSrc) lnSrc.setData(vectorLinesGeoJSON);
+    if (plSrc) plSrc.setData(vectorPolysGeoJSON);
   }, [heatmapPointsGeoJSON, vectorLinesGeoJSON, vectorPolysGeoJSON, isLoaded]);
 
   // ── Precision Swiss Epicenter HUD Badges (Shown seamlessly at closer zooms) ─

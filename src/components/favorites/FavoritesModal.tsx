@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Star, Home, Briefcase, GraduationCap, Plus, Trash2, Bell, MapPin, Search, Loader2, Navigation, Check } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import React, { useState, useEffect } from 'react';
+import { type LucideIcon, X, Star, Home, Briefcase, GraduationCap, Plus, Trash2, Bell, MapPin, Search, Loader2, Navigation, Check } from 'lucide-react';
+import { useSafety } from '../../context/useSafety';
 import type { FavoriteDTO } from '../../api/favoritesApi';
 import { searchPlaces, type GeocodedPlace } from '../../api/geocodingApi';
 
-const TYPE_ICONS: Record<string, React.FC<any>> = { home: Home, work: Briefcase, school: GraduationCap };
+const TYPE_ICONS: Record<string, LucideIcon> = { home: Home, work: Briefcase, school: GraduationCap };
 const TYPE_COLORS: Record<string, string> = {
   home: 'text-s-primary',
   work: 'text-sky-500',
@@ -23,36 +23,32 @@ export const FavoritesModal: React.FC = () => {
   const [placeType, setPlaceType] = useState('home');
   const [address, setAddress] = useState('');
   const [addressQuery, setAddressQuery] = useState('');
-  const [suggestions, setSuggestions] = useState<GeocodedPlace[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  // Last completed search, and the query whose suggestions were closed by a pick
+  const [search, setSearch] = useState<{ query: string; places: GeocodedPlace[] }>({ query: '', places: [] });
+  const [closedQuery, setClosedQuery] = useState<string | null>(null);
   const [selectedCoords, setSelectedCoords] = useState<[number, number] | null>(null);
 
-  const debounceRef = useRef<any>(null);
+  const trimmedQuery = addressQuery.trim();
+  const wantsSuggestions = trimmedQuery.length >= 2 && trimmedQuery !== closedQuery;
+  const isSearching = wantsSuggestions && search.query !== trimmedQuery;
+  const suggestions = wantsSuggestions && search.query === trimmedQuery ? search.places : [];
 
-  // Address Autocomplete Search
+  // Address Autocomplete Search (debounced; results are keyed by the query they answer)
   useEffect(() => {
-    if (addressQuery.trim().length < 2) {
-      setSuggestions([]);
-      setIsSearching(false);
-      return;
-    }
-
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    setIsSearching(true);
-
-    debounceRef.current = setTimeout(async () => {
+    if (!wantsSuggestions) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      let places: GeocodedPlace[] = [];
       try {
-        const results = await searchPlaces(addressQuery.trim());
-        setSuggestions(results.slice(0, 5));
-      } catch {
-        setSuggestions([]);
-      } finally {
-        setIsSearching(false);
-      }
+        places = (await searchPlaces(trimmedQuery)).slice(0, 5);
+      } catch { /* network error: no suggestions */ }
+      if (!cancelled) setSearch({ query: trimmedQuery, places });
     }, 280);
-
-    return () => clearTimeout(debounceRef.current);
-  }, [addressQuery]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trimmedQuery, wantsSuggestions]);
 
   if (activeModal !== 'favorites') return null;
 
@@ -74,7 +70,7 @@ export const FavoritesModal: React.FC = () => {
     setAddressQuery(p.displayName);
     setSelectedCoords([p.latitude, p.longitude]);
     if (!name.trim()) setName(p.name);
-    setSuggestions([]);
+    setClosedQuery(p.displayName.trim());
   };
 
   const handleUseGps = () => {
@@ -84,7 +80,7 @@ export const FavoritesModal: React.FC = () => {
     setAddress('Ma position GPS actuelle');
     setAddressQuery('Ma position GPS actuelle');
     if (!name.trim()) setName('Ma position');
-    setSuggestions([]);
+    setClosedQuery('Ma position GPS actuelle');
   };
 
   const handleAdd = async (e: React.FormEvent) => {
@@ -107,7 +103,7 @@ export const FavoritesModal: React.FC = () => {
     setAddress('');
     setAddressQuery('');
     setSelectedCoords(null);
-    setSuggestions([]);
+    setClosedQuery(null);
     setIsAdding(false);
   };
 
@@ -297,7 +293,7 @@ export const FavoritesModal: React.FC = () => {
                   onClick={() => {
                     setIsAdding(false);
                     setAddressQuery('');
-                    setSuggestions([]);
+                    setClosedQuery(null);
                     setSelectedCoords(null);
                   }}
                   className="flex-1 btn-ghost py-2.5 text-xs font-bold rounded-xl"
