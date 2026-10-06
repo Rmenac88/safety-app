@@ -8,8 +8,11 @@ SCRIPT_EVENTS_REGEX = re.compile(r'(on\w+\s*=|javascript:|data:text/html|vbscrip
 
 # Prohibited hate speech, severe harassment, or explicit threat patterns for automated moderation
 REJECT_KEYWORDS = [
-    r'\bmort aux\b', r'\bva mourir\b', r'\battentat imminent\b', r'\bpose une bombe\b',
-    r'\bfollow me on\b', r'\bpromo code\b', r'\bfree money\b', r'\bbit\.ly\b'
+    r'\bmort aux\b', r'\bva mourir\b', r'\battentat imminent\b', r'\bpose(?:r)?\s+une\s+bombe\b',
+    r'\bfollow me on\b', r'\bpromo code\b', r'\bfree money\b', r'\bbit\.ly\b',
+    r'\bbougnoul\w*\b', r'\bprostitu\w*\b', r'\bpute\w*\b', r'\bsalope\w*\b', r'\bmicheton\w*\b',
+    r'\btapin\w*\b', r'\bn[eèé]gre\w*\b', r'\bbicot\w*\b', r'\bbamboula\w*\b', r'\byoupin\w*\b',
+    r'\bchintok\w*\b', r'\bniakou\w*\b', r'\bp[eé]d[eé]\w*\b', r'\bp[eé]dale\w*\b', r'\btarlouze\w*\b',
 ]
 REVIEW_KEYWORDS = [
     r'\barme à feu\b', r'\bkallach\b', r'\bkalach\b', r'\bterroriste\b', r'\bégorger\b'

@@ -41,7 +41,10 @@ HIGH_PATTERNS: List[Tuple[re.Pattern, ModerationCategory]] = [
     # Explicit sexual / pornography (unnecessary explicit sexual details)
     (re.compile(r"\b(grosse\s+bite|chatte\s+bien\s+mouillee|suce\s+moi|baise\s+moi|pornographi|hardcore\s+sex|gangbang|fellation|sodomie|nude\s+gratuit|onlyfans\.com)\b", re.IGNORECASE), ModerationCategory.SEXUAL_EXPLICIT),
     # Severe targeted hate / slurs (FR & EN)
+    (re.compile(r"\b(bougnoul(?:e|es|s)?|bicot(?:s)?|bamboula(?:s)?|youpin(?:s)?|crouille(?:s)?|macaque(?:s)?|negre(?:s)?|nègre(?:s)?|nigger(?:s)?|nigga(?:s)?|chintok(?:s)?|niakou[eé](?:s)?|kike(?:s)?|chink(?:s)?|gook(?:s)?)\b", re.IGNORECASE), ModerationCategory.RACISM),
     (re.compile(r"\b(sale\s+negre|sale\s+arabe|sale\s+feuj|sale\s+youpin|sale\s+bougnoul|sale\s+babtou|nigger|nigga|kike|chink|gook)\b", re.IGNORECASE), ModerationCategory.RACISM),
+    # Prostitution slander & degrading language
+    (re.compile(r"\b(prostitu[eé](?:e|es|s)?|prostitution|prostituer|pute(?:s)?|salope(?:s)?|michetonneuse(?:s)?|tapin(?:er|eur|euse)?(?:s)?|escort(?:e)?(?:s)?)\b", re.IGNORECASE), ModerationCategory.SEXISM),
     (re.compile(r"\b(sale\s+pute|grosse\s+salope|sale\s+chienne|connasse|grognasse)\b", re.IGNORECASE), ModerationCategory.SEXISM),
     (re.compile(r"\b(sale\s+pedale|sale\s+gouine|tarlouze|tapette|faggot|dyke)\b", re.IGNORECASE), ModerationCategory.HOMOPHOBIA),
     (re.compile(r"\b(sale\s+trans|sale\s+tranny|aberration\s+trans)\b", re.IGNORECASE), ModerationCategory.TRANSPHOBIA),
@@ -72,6 +75,8 @@ COLLAPSED_CRITICAL_SUBSTRINGS: List[Tuple[str, ModerationCategory]] = [
     ("salepute", ModerationCategory.SEXISM),
     ("grossesalope", ModerationCategory.SEXISM),
     ("salope", ModerationCategory.SEXISM),
+    ("bougnoul", ModerationCategory.RACISM),
+    ("prostitu", ModerationCategory.SEXISM),
     ("baise", ModerationCategory.SEXUAL_EXPLICIT),
     ("fellation", ModerationCategory.SEXUAL_EXPLICIT),
     ("sodomie", ModerationCategory.SEXUAL_EXPLICIT),

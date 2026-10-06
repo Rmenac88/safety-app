@@ -8,7 +8,8 @@ import { fetchFavorites, createFavorite, deleteFavorite } from '../api/favorites
 import type { FavoriteDTO } from '../api/favoritesApi';
 import { fetchNotifications, markNotificationRead, deleteNotificationApi, clearAllNotificationsApi } from '../api/notificationsApi';
 import type { NotificationDTO } from '../api/notificationsApi';
-import { getDeviceId } from '../api/client';
+import { getDeviceId, ApiError } from '../api/client';
+import { evaluateContentModeration } from '../services/contentModerationService';
 import type { DrawingMode, GeoJSONGeometry, IncidentCategory, WalkSession } from '../types/safety';
 import { playEmergencySiren, stopEmergencySiren, playWarningBeep } from '../utils/sirenAudio';
 import { calculateDistance } from '../utils/geoUtils';
@@ -743,6 +744,21 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // ── Incident mutations ────────────────────────────────────────────────────
   const submitIncident = useCallback(async (payload: CreateIncidentPayload) => {
     hapticFeedback('heavy');
+
+    // ── STRICT LOCAL MODERATION INTERCEPTION (Zero-Tolerance) ──
+    const textToCheck = `${payload.title} ${payload.description || ''} ${payload.address || ''}`;
+    const moderationVerdict = evaluateContentModeration(textToCheck);
+    if (moderationVerdict.isBlocked) {
+      const blockedErr = new ApiError(
+        422,
+        JSON.stringify({
+          code: 'CONTENT_BLOCKED',
+          title: moderationVerdict.reasonTitle,
+          message: moderationVerdict.reasonMessage,
+        })
+      );
+      throw blockedErr;
+    }
 
     const [safeLat, safeLon] = normalizeCoords(payload.latitude, payload.longitude);
 

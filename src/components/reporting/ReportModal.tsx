@@ -11,6 +11,7 @@ import {
 } from '../../design/tokens';
 import { reverseGeocode, fetchStreetGeometry, searchPlaces, type GeocodedPlace } from '../../api/geocodingApi';
 import { classifyIncidentText, type ClassifiedIncidentDTO } from '../../api/incidentApi';
+import { evaluateContentModeration } from '../../services/contentModerationService';
 import type { GeometryType, IncidentCategory } from '../../types/safety';
 
 const CATEGORIES = Object.keys(categoryLabels) as IncidentCategory[];
@@ -59,6 +60,9 @@ export const ReportModal: React.FC = () => {
   } | null>(null);
 
   const classifyTimerRef = useRef<any>(null);
+
+  // Real-time zero-tolerance content moderation evaluation
+  const liveModeration = evaluateContentModeration(customText);
 
   // Automatically lock real-time GPS coordinates on report modal open (skip if user drew custom geometry)
   useEffect(() => {
@@ -257,6 +261,18 @@ export const ReportModal: React.FC = () => {
     e.preventDefault();
     setValidationError(null);
 
+    // ── STRICT CONTENT MODERATION INTERCEPTION (Racism, Hate Speech, Degrading Language) ──
+    const textToCheck = `${customText} ${searchQuery} ${address}`.trim();
+    const moderationVerdict = evaluateContentModeration(textToCheck);
+    if (moderationVerdict.isBlocked) {
+      hapticFeedback('heavy');
+      setModerationBlockedState({
+        title: moderationVerdict.reasonTitle,
+        message: moderationVerdict.reasonMessage,
+      });
+      return;
+    }
+
     // Validation for category 14 ("Autres situations")
     if (category === 'other' && (!customText.trim() || customText.trim().length < 5)) {
       setValidationError('Veuillez obligatoirement décrire la situation (minimum 5 caractères).');
@@ -395,27 +411,35 @@ export const ReportModal: React.FC = () => {
           </button>
         </div>
 
-        {/* ── MODERATION BLOCKED APPLE MODAL VIEW ────────────────────── */}
+        {/* ── MODERATION BLOCKED APPLE SYSTEM MODAL VIEW ──────────────── */}
         {moderationBlockedState ? (
           <div className="p-8 flex-1 flex flex-col items-center justify-center text-center animate-scale-in my-auto">
-            <div className="w-16 h-16 rounded-3xl bg-rose-50 border border-rose-200 text-rose-500 flex items-center justify-center shadow-md mb-4 animate-bounce">
-              <ShieldAlert className="w-8 h-8" />
+            <div className="relative w-20 h-20 rounded-3xl bg-rose-500/10 border-2 border-rose-500/30 text-rose-600 flex items-center justify-center shadow-lg shadow-rose-950/10 mb-4">
+              <ShieldAlert className="w-10 h-10 stroke-[2.2]" />
             </div>
+
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-200 mb-3">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-600" />
+              Protection Citoyenne & Modération Active
+            </span>
+
             <h3 className="text-xl font-black text-slate-900 mb-2">
               {moderationBlockedState.title}
             </h3>
-            <p className="text-sm text-slate-600 max-w-sm mb-6 leading-relaxed">
+            <p className="text-xs sm:text-sm text-slate-600 max-w-sm mb-6 leading-relaxed">
               {moderationBlockedState.message}
             </p>
+
             <button
               type="button"
               onClick={() => {
                 hapticFeedback('light');
                 setModerationBlockedState(null);
               }}
-              className="w-full max-w-xs py-3.5 px-6 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm shadow-island active:scale-98 transition-all"
+              className="w-full max-w-xs py-3.5 px-6 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm shadow-island active:scale-98 transition-all flex items-center justify-center gap-2"
             >
-              Modifier la description
+              <Edit3 className="w-4 h-4" />
+              <span>Corriger et modifier le texte</span>
             </button>
           </div>
         ) : (
@@ -588,6 +612,19 @@ export const ReportModal: React.FC = () => {
                     required
                   />
 
+                  {/* Live Prohibited Content Moderation Warning */}
+                  {liveModeration.isBlocked && (
+                    <div className="p-3 rounded-2xl bg-rose-50 border border-rose-300 text-rose-950 flex items-start gap-2.5 text-xs animate-scale-in">
+                      <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <div className="font-black text-rose-900">Propos interdits par la modération</div>
+                        <div className="text-[11px] text-rose-700 mt-0.5 leading-snug">
+                          Votre description contient des termes non conformes {liveModeration.detectedWord ? `(« ${liveModeration.detectedWord} »)` : '(discours discriminatoire ou haineux)'}. La publication sera bloquée tant que ces propos ne sont pas retirés.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* AI Detection Card */}
                   {aiClassification && (
                     <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 animate-scale-in flex items-center justify-between">
@@ -693,6 +730,19 @@ export const ReportModal: React.FC = () => {
                     }`}
                     required={category === 'other'}
                   />
+
+                  {/* Live Prohibited Content Moderation Warning */}
+                  {liveModeration.isBlocked && (
+                    <div className="p-3 rounded-2xl bg-rose-50 border border-rose-300 text-rose-950 flex items-start gap-2.5 text-xs animate-scale-in">
+                      <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <div className="font-black text-rose-900">Propos interdits par la modération</div>
+                        <div className="text-[11px] text-rose-700 mt-0.5 leading-snug">
+                          Votre description contient des termes non conformes {liveModeration.detectedWord ? `(« ${liveModeration.detectedWord} »)` : '(discours discriminatoire ou haineux)'}. La publication sera bloquée.
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -838,14 +888,26 @@ export const ReportModal: React.FC = () => {
               <button
                 type="submit"
                 disabled={isSubmitting}
-                className="w-full btn-danger py-3 text-xs font-bold rounded-2xl flex items-center justify-center gap-2 disabled:opacity-60 shadow-glow-danger"
+                className={`w-full py-3.5 text-xs font-bold rounded-2xl flex items-center justify-center gap-2 transition-all ${
+                  liveModeration.isBlocked
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-950/20 active:scale-98'
+                    : 'btn-danger shadow-glow-danger'
+                }`}
               >
                 {isSubmitting ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
+                ) : liveModeration.isBlocked ? (
+                  <ShieldAlert className="w-4 h-4" />
                 ) : (
                   <Send className="w-4 h-4" />
                 )}
-                <span>{isSubmitting ? 'Enregistrement…' : 'Confirmer et publier le signalement'}</span>
+                <span>
+                  {isSubmitting
+                    ? 'Enregistrement…'
+                    : liveModeration.isBlocked
+                    ? 'Signalement bloqué (propos interdits)'
+                    : 'Confirmer et publier le signalement'}
+                </span>
               </button>
             </form>
           )}
