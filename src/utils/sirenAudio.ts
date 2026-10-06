@@ -94,3 +94,36 @@ export function stopEmergencySiren(): void {
 export function isEmergencySirenPlaying(): boolean {
   return isPlaying;
 }
+
+/**
+ * 🔔 Gentle but urgent 2-tone Safety Prompt Beep (880Hz -> 1174Hz)
+ */
+export function playWarningBeep(): void {
+  try {
+    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    const ctx = new AudioContextClass();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    const now = ctx.currentTime;
+
+    osc.frequency.setValueAtTime(880, now);
+    osc.frequency.setValueAtTime(1174, now + 0.18);
+
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.6);
+
+    setTimeout(() => {
+      try { ctx.close(); } catch {}
+    }, 800);
+  } catch {}
+}

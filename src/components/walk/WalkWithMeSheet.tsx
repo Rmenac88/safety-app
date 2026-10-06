@@ -1,19 +1,30 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  X, Shield, Clock, Phone, Share2, AlertTriangle,
-  Volume2, VolumeX, CheckCircle, Home, Briefcase, MapPin,
-  ChevronRight, ArrowRight, HeartHandshake, Loader2, Check
+  X, Clock, Phone, Share2, AlertTriangle,
+  Volume2, VolumeX, CheckCircle, MapPin,
+  ChevronRight, ArrowRight, HeartHandshake, Loader2, Check,
+  Compass, Bell, MessageSquare
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useSafety } from '../../context/SafetyContext';
 import { searchPlaces } from '../../api/geocodingApi';
 import type { GeocodedPlace } from '../../api/geocodingApi';
 import { calculateDistance, formatDistance } from '../../utils/geoUtils';
+import { computeWalkingEstimate } from '../../utils/walkingMath';
+import { fetchNearbyPois, type PoiCategory, type NearbyPoi } from '../../services/nearbyPoiService';
+
+const POI_CATEGORIES: { id: PoiCategory; label: string; icon: string }[] = [
+  { id: 'transit', label: 'Gares & Métro', icon: '🚉' },
+  { id: 'police', label: 'Police', icon: '👮' },
+  { id: 'health', label: 'Santé', icon: '🏥' },
+  { id: 'havens', label: 'Refuges', icon: '🏪' },
+  { id: 'favorites', label: 'Favoris', icon: '⭐' },
+];
 
 export const WalkWithMeSheet: React.FC = () => {
   const {
     activeModal, setActiveModal, filters, hapticFeedback,
-    userLocation, favorites,
+    userLocation, favorites, requestUserLocation,
     walkSession, startWalkSession, confirmSafetyCheck, triggerWalkAlert,
     toggleWalkSiren, endWalkSession,
   } = useSafety();
@@ -22,13 +33,62 @@ export const WalkWithMeSheet: React.FC = () => {
   const [destinationQuery, setDestinationQuery] = useState('');
   const [searchResults, setSearchResults] = useState<GeocodedPlace[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [selectedPlace, setSelectedPlace] = useState<{ name: string; coords: [number, number] } | null>(null);
-  const [estimatedMinutes, setEstimatedMinutes] = useState(15);
-  const [contactName, setContactName] = useState('');
-  const [contactPhone, setContactPhone] = useState('');
+  const [selectedPlace, setSelectedPlace] = useState<{
+    name: string;
+    coords: [number, number];
+    address?: string;
+  } | null>(null);
+
+  // Nearby POIs
+  const [activeCategory, setActiveCategory] = useState<PoiCategory>('transit');
+  const [nearbyPois, setNearbyPois] = useState<NearbyPoi[]>([]);
+  const [isLoadingPois, setIsLoadingPois] = useState(false);
+
+  // Mathematical walking buffer & adjusters
+  const [extraBufferMinutes, setExtraBufferMinutes] = useState(0);
+
+  // Emergency contact stored persistently
+  const [contactName, setContactName] = useState(() => {
+    return localStorage.getItem('safety_walk_contact_name') || '';
+  });
+  const [contactPhone, setContactPhone] = useState(() => {
+    return localStorage.getItem('safety_walk_contact_phone') || '';
+  });
   const [copiedLink, setCopiedLink] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(() => {
+    return typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied';
+  });
 
   const isDark = filters.mapTileStyle === 'dark';
+
+  // Request notification permission if requested
+  const handleRequestNotifications = async () => {
+    if ('Notification' in window) {
+      const perm = await Notification.requestPermission();
+      setNotificationPermission(perm);
+      hapticFeedback('medium');
+    }
+  };
+
+  // Load nearby POIs for the active category
+  const loadCategoryPois = useCallback(async (cat: PoiCategory) => {
+    if (cat === 'favorites') return;
+    setIsLoadingPois(true);
+    try {
+      const results = await fetchNearbyPois(cat, userLocation);
+      setNearbyPois(results);
+    } catch (err) {
+      console.warn('Load category POIs notice:', err);
+    } finally {
+      setIsLoadingPois(false);
+    }
+  }, [userLocation]);
+
+  useEffect(() => {
+    if (activeModal === 'walk' && !walkSession) {
+      loadCategoryPois(activeCategory);
+    }
+  }, [activeCategory, activeModal, walkSession, loadCategoryPois]);
 
   // Autocomplete search for destination
   useEffect(() => {
@@ -47,20 +107,36 @@ export const WalkWithMeSheet: React.FC = () => {
       } finally {
         setIsSearching(false);
       }
-    }, 320);
+    }, 300);
 
     return () => clearTimeout(timer);
-  }, [destinationQuery, userLocation]);
+  }, [destinationQuery]);
+
+  // Mathematical ETA Calculation
+  const mathematicalEstimate = useMemo(() => {
+    if (!selectedPlace) return null;
+    const origin = userLocation || [48.8566, 2.3522];
+    const dist = calculateDistance(
+      origin[0], origin[1],
+      selectedPlace.coords[0], selectedPlace.coords[1]
+    );
+    const est = computeWalkingEstimate(dist);
+    const finalMinutes = est.totalEstimatedMinutes + extraBufferMinutes;
+    return {
+      ...est,
+      finalMinutes,
+    };
+  }, [selectedPlace, userLocation, extraBufferMinutes]);
 
   // Confetti on arrival
   useEffect(() => {
     if (walkSession?.status === 'arrived') {
       try {
         confetti({
-          particleCount: 80,
-          spread: 70,
+          particleCount: 100,
+          spread: 80,
           origin: { y: 0.6 },
-          colors: ['#10B981', '#38BDF8', '#6366F1', '#F59E0B'],
+          colors: ['#06B6D4', '#10B981', '#3B82F6', '#F59E0B'],
         });
       } catch {}
     }
@@ -68,29 +144,38 @@ export const WalkWithMeSheet: React.FC = () => {
 
   if (activeModal !== 'walk') return null;
 
-  // Real-time metrics
+  // Real-time walk metrics
   const now = Date.now();
   const remainingMs = walkSession ? Math.max(0, walkSession.targetArrivalTimestamp - now) : 0;
   const remainingMinutes = Math.floor(remainingMs / 60000);
   const remainingSeconds = Math.floor((remainingMs % 60000) / 1000);
 
-  const distanceMeters = useMemo(() => {
-    if (!walkSession || !userLocation) return null;
-    return calculateDistance(
-      userLocation[0],
-      userLocation[1],
-      walkSession.destinationCoords[0],
-      walkSession.destinationCoords[1]
-    );
-  }, [walkSession, userLocation]);
+  const distanceMeters = walkSession && userLocation
+    ? calculateDistance(
+        userLocation[0],
+        userLocation[1],
+        walkSession.destinationCoords[0],
+        walkSession.destinationCoords[1]
+      )
+    : null;
 
   const handleStartWalk = () => {
-    if (!selectedPlace) return;
+    if (!selectedPlace || !mathematicalEstimate) return;
     hapticFeedback('heavy');
+
+    // Save contact to local storage
+    if (contactName.trim()) localStorage.setItem('safety_walk_contact_name', contactName.trim());
+    if (contactPhone.trim()) localStorage.setItem('safety_walk_contact_phone', contactPhone.trim());
+
+    // Prompt for notifications if not yet granted
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+
     startWalkSession({
       destinationName: selectedPlace.name,
       destinationCoords: selectedPlace.coords,
-      estimatedMinutes,
+      estimatedMinutes: mathematicalEstimate.finalMinutes,
       contactName: contactName.trim() || undefined,
       contactPhone: contactPhone.trim() || undefined,
     });
@@ -100,7 +185,7 @@ export const WalkWithMeSheet: React.FC = () => {
     if (!walkSession) return;
     hapticFeedback('medium');
     const shareUrl = `https://safety-psi-ruddy.vercel.app/?walkId=${walkSession.id}&dest=${encodeURIComponent(walkSession.destinationName)}`;
-    const shareText = `🛡️ Suis mon trajet en direct sur Safety : je marche vers « ${walkSession.destinationName} », arrivée estimée dans ${remainingMinutes} min. Suivi live : ${shareUrl}`;
+    const shareText = `🛡️ Suis mon trajet en direct sur Safety : je marche vers « ${walkSession.destinationName} ». Arrivée estimée dans ${remainingMinutes} min. Suivi live : ${shareUrl}`;
 
     if (navigator.share) {
       try {
@@ -120,29 +205,37 @@ export const WalkWithMeSheet: React.FC = () => {
     } catch {}
   };
 
+  const emergencyDialNumber = walkSession?.contactPhone || '17';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-md animate-fade-in pointer-events-auto">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/75 backdrop-blur-xl animate-fade-in pointer-events-auto">
       <div
-        className={`w-full sm:max-w-md max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl border shadow-2xl transition-all duration-300 p-5 flex flex-col gap-4 ${
+        className={`w-full sm:max-w-md max-h-[92vh] overflow-y-auto rounded-t-[32px] sm:rounded-[32px] border transition-all duration-300 p-5 sm:p-6 flex flex-col gap-4 shadow-[0_25px_70px_rgba(0,0,0,0.85)] ${
           isDark
-            ? 'bg-slate-900/95 text-white border-slate-700/80 shadow-black/80'
-            : 'bg-white/98 text-slate-900 border-slate-200/90 shadow-slate-900/20'
+            ? 'bg-slate-950/90 text-white border-white/10 shadow-black'
+            : 'bg-white/95 text-slate-900 border-slate-200/90 shadow-slate-900/30'
         }`}
       >
+        {/* Apple Mobile Sheet Handle Grabber */}
+        <div className="w-12 h-1.5 rounded-full bg-slate-400/30 dark:bg-slate-700/60 mx-auto -mt-1 sm:hidden shrink-0" />
+
         {/* ── Top Header Bar ─────────────────────────────────────────── */}
-        <div className="flex items-center justify-between pb-1 border-b border-slate-200/50 dark:border-slate-800">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-2xl bg-cyan-500/15 text-cyan-500 flex items-center justify-center shadow-xs">
-              <HeartHandshake className="w-5 h-5 stroke-[2.2]" />
+        <div className="flex items-center justify-between pb-2 border-b border-white/5 dark:border-white/5">
+          <div className="flex items-center gap-3">
+            <div className="relative w-10 h-10 rounded-2xl bg-cyan-500/15 border border-cyan-500/30 text-cyan-400 flex items-center justify-center shadow-[0_0_15px_rgba(6,182,212,0.3)]">
+              <HeartHandshake className="w-5 h-5 stroke-[2.3]" />
+              <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
             </div>
             <div>
-              <h2 className="text-sm sm:text-base font-black tracking-tight leading-none flex items-center gap-1.5">
-                Walk With Me
-                <span className="text-[10px] uppercase font-extrabold px-1.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-500 border border-cyan-500/30">
-                  Sécurité
+              <div className="flex items-center gap-2">
+                <h2 className="text-base sm:text-lg font-black tracking-tight leading-none">
+                  Walk With Me
+                </h2>
+                <span className="text-[9px] uppercase tracking-wider font-black px-2 py-0.5 rounded-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-xs">
+                  ASSISTANCE LIVE
                 </span>
-              </h2>
-              <p className="text-[11px] text-slate-400 mt-0.5">Accompagnement virtuel en direct</p>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">Compagnon de marche avec surveillance chrono</p>
             </div>
           </div>
 
@@ -151,166 +244,218 @@ export const WalkWithMeSheet: React.FC = () => {
               hapticFeedback('light');
               setActiveModal(null);
             }}
-            className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            className="p-2 rounded-full text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
             aria-label="Fermer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* ── CASE 1: WALK COMPLETED / ARRIVED ───────────────────────── */}
-        {walkSession?.status === 'arrived' && (
-          <div className="py-8 text-center flex flex-col items-center gap-3 animate-scale-in">
-            <div className="w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center ring-8 ring-emerald-500/10">
-              <CheckCircle className="w-9 h-9 stroke-[2.5]" />
+        {/* ── CASE 1: ALERT STATUS (EMERGENCY DISTRESS ACTIVATED) ─────── */}
+        {walkSession?.status === 'alert' && (
+          <div className="flex flex-col gap-4 p-5 rounded-3xl bg-red-950/70 border-2 border-red-500 text-white animate-pulse shadow-[0_0_40px_rgba(239,68,68,0.4)]">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-600 flex items-center justify-center text-white shrink-0 shadow-lg animate-bounce">
+                <AlertTriangle className="w-7 h-7" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-red-200">ALERTE D'URGENCE DÉCLENCHÉE</h3>
+                <p className="text-xs text-red-300 mt-0.5">
+                  Aucune confirmation d'arrivée reçue. Sirène 110dB active.
+                </p>
+              </div>
             </div>
-            <h3 className="text-lg font-black text-emerald-500">Vous êtes bien arrivé(e) !</h3>
-            <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
-              Votre trajet sécurisé vers <strong className="text-slate-200">{walkSession.destinationName}</strong> a été validé avec succès. Vos proches sont rassurés.
-            </p>
-            <button
-              onClick={() => endWalkSession('idle')}
-              className="mt-2 w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg transition-transform active:scale-95"
-            >
-              Terminer l'accompagnement
-            </button>
+
+            {/* Emergency Action Buttons */}
+            <div className="flex flex-col gap-2 pt-2">
+              <a
+                href={`tel:${emergencyDialNumber}`}
+                className="w-full py-3.5 px-4 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-black text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-all text-center"
+              >
+                <Phone className="w-5 h-5" />
+                <span>
+                  Appeler {walkSession.contactPhone ? `${walkSession.contactName || 'le Proche'} (${walkSession.contactPhone})` : 'Police Secours (17)'}
+                </span>
+              </a>
+
+              <div className="grid grid-cols-2 gap-2">
+                <a
+                  href="tel:17"
+                  className="py-3 px-3 rounded-2xl bg-red-700/80 hover:bg-red-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+                >
+                  <Phone className="w-4 h-4" /> Police (17)
+                </a>
+                <a
+                  href="tel:112"
+                  className="py-3 px-3 rounded-2xl bg-red-700/80 hover:bg-red-600 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+                >
+                  <Phone className="w-4 h-4" /> Urgences (112)
+                </a>
+              </div>
+
+              {walkSession.contactPhone && (
+                <a
+                  href={`sms:${walkSession.contactPhone}?body=${encodeURIComponent(
+                    `URGENCE SAFETY: Je n'ai pas confirmé mon arrivée à ${walkSession.destinationName}. Ma position en direct: https://maps.google.com/?q=${userLocation ? `${userLocation[0]},${userLocation[1]}` : ''}`
+                  )}`}
+                  className="py-3 px-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all text-center"
+                >
+                  <MessageSquare className="w-4 h-4" /> SMS Détresse au proche
+                </a>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-red-800/80">
+              <button
+                onClick={toggleWalkSiren}
+                className="flex-1 py-2.5 rounded-xl bg-red-900/60 hover:bg-red-900 text-red-200 text-xs font-bold flex items-center justify-center gap-1.5"
+              >
+                {walkSession.isSirenActive ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                <span>{walkSession.isSirenActive ? 'Couper la sirène' : 'Activer sirène'}</span>
+              </button>
+              <button
+                onClick={() => endWalkSession('idle')}
+                className="flex-1 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold"
+              >
+                Arrêter l'alerte (Je vais bien)
+              </button>
+            </div>
           </div>
         )}
 
-        {/* ── CASE 2: ACTIVE WALK SESSION RUNNING ──────────────────────── */}
-        {walkSession && (walkSession.status === 'active' || walkSession.status === 'alert') && (
-          <div className="flex flex-col gap-4 animate-fade-in">
-            {/* Urgent Safety Check Banner if pending */}
+        {/* ── CASE 2: ARRIVED SAFELY STATUS ──────────────────────────── */}
+        {walkSession?.status === 'arrived' && (
+          <div className="flex flex-col items-center justify-center text-center p-6 rounded-3xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 gap-3 animate-scale-up">
+            <div className="w-16 h-16 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-lg shadow-emerald-500/40">
+              <CheckCircle className="w-9 h-9 stroke-[2.5]" />
+            </div>
+            <div>
+              <h3 className="text-lg font-black text-emerald-400">Arrivé(e) à destination !</h3>
+              <p className="text-xs text-slate-300 mt-1">
+                Félicitations, vous êtes en sécurité à « {walkSession.destinationName} ».
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── CASE 3: ACTIVE WALK IN PROGRESS ────────────────────────── */}
+        {walkSession && walkSession.status === 'active' && (
+          <div className="flex flex-col gap-4">
+            {/* Safety Check Countdown Banner (Prompt before calling emergency) */}
             {walkSession.safetyCheckPending && (
-              <div className="p-3.5 rounded-2xl bg-amber-500/20 border border-amber-500/50 flex flex-col gap-2.5 animate-pulse">
+              <div className="p-4 rounded-3xl bg-amber-500/20 border-2 border-amber-500/60 text-amber-200 flex flex-col gap-3 animate-pulse">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-black text-amber-400 flex items-center gap-1.5">
-                    <AlertTriangle className="w-4 h-4" /> Contrôle de sécurité
-                  </span>
-                  <span className="font-mono font-black text-xs text-amber-300">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-5 h-5 text-amber-400 animate-spin" />
+                    <span className="font-black text-sm">Contrôle de sécurité en cours</span>
+                  </div>
+                  <span className="text-lg font-mono font-black text-amber-400">
                     {walkSession.checkDeadlineSeconds}s
                   </span>
                 </div>
-                <p className="text-[11px] text-amber-200 leading-snug">
-                  L'horaire prévu est dépassé. Touchez pour confirmer que vous êtes en sécurité avant alerte.
+                <p className="text-xs leading-relaxed text-amber-100">
+                  Temps de marche écoulé ! Confirmez votre sécurité ou l'alerte d'urgence et l'appel vers {walkSession.contactPhone || 'le 17'} seront déclenchés automatiquement.
                 </p>
-                <button
-                  onClick={confirmSafetyCheck}
-                  className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs shadow-md transition-all active:scale-95"
-                >
-                  Oui, je suis en sécurité (+5 min)
-                </button>
-              </div>
-            )}
-
-            {/* Distress Alert Banner if triggered */}
-            {walkSession.status === 'alert' && (
-              <div className="p-3.5 rounded-2xl bg-red-600/25 border-2 border-red-500 flex flex-col gap-2.5 animate-pulse">
-                <div className="flex items-center gap-2 text-red-400 font-black text-xs">
-                  <AlertTriangle className="w-5 h-5" /> ALERTE DÉTRESSE ACTIVE
-                </div>
-                <p className="text-[11px] text-red-200">
-                  La sirène de détresse est déclenchée. Vos contacts et les utilisateurs Safety proches sont notifiés.
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <a
-                    href="tel:17"
-                    className="py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-black text-center text-xs shadow-md flex items-center justify-center gap-1.5"
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={confirmSafetyCheck}
+                    className="flex-1 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-white font-black text-xs shadow-md transition-all active:scale-95 flex items-center justify-center gap-1.5"
                   >
-                    <Phone className="w-3.5 h-3.5" /> Police (17)
-                  </a>
-                  <a
-                    href="tel:112"
-                    className="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-center text-xs flex items-center justify-center gap-1.5"
+                    <CheckCircle className="w-4 h-4" /> Je suis en sécurité
+                  </button>
+                  <button
+                    onClick={triggerWalkAlert}
+                    className="px-3.5 py-3 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs"
                   >
-                    <Phone className="w-3.5 h-3.5" /> Urgences (112)
-                  </a>
+                    SOS Immédiat
+                  </button>
                 </div>
               </div>
             )}
 
-            {/* Live Journey Progress Card */}
-            <div className={`p-4 rounded-3xl border flex flex-col gap-3 ${
-              isDark ? 'bg-slate-800/60 border-slate-700/80' : 'bg-slate-50 border-slate-200'
-            }`}>
+            {/* Apple Watch Digital Chrono Face Card */}
+            <div className="p-5 rounded-3xl bg-gradient-to-b from-cyan-500/10 to-blue-600/10 border border-cyan-500/20 flex flex-col gap-4">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                  Trajet vers
-                </span>
-                <span className="text-xs font-mono font-extrabold text-s-primary">
-                  {distanceMeters !== null ? formatDistance(distanceMeters) : '--'}
-                </span>
-              </div>
-
-              <div className="text-sm font-black text-slate-900 dark:text-white truncate">
-                🏁 {walkSession.destinationName}
+                <div>
+                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider block">
+                    Destination en cours
+                  </span>
+                  <h3 className="text-base font-black truncate max-w-[240px]">
+                    {walkSession.destinationName}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-500/20 text-cyan-400 text-xs font-bold border border-cyan-500/30">
+                  <Compass className="w-3.5 h-3.5 animate-spin" />
+                  <span>En marche</span>
+                </div>
               </div>
 
               {/* Countdown Digits */}
-              <div className="flex items-center justify-between pt-1">
-                <div className="text-2xl sm:text-3xl font-mono font-black text-cyan-400 leading-none">
+              <div className="flex items-baseline justify-center gap-2 py-1">
+                <span className="text-4xl sm:text-5xl font-mono font-black tracking-tight text-white drop-shadow-[0_0_20px_rgba(6,182,212,0.6)]">
                   {String(remainingMinutes).padStart(2, '0')}:{String(remainingSeconds).padStart(2, '0')}
+                </span>
+                <span className="text-xs font-bold text-slate-400">restantes</span>
+              </div>
+
+              {/* Distance Remaining & Auto-Arrival Indicator */}
+              <div className="flex items-center justify-between text-xs font-semibold px-2 text-slate-400 border-t border-white/5 pt-3">
+                <div className="flex items-center gap-1.5">
+                  <MapPin className="w-4 h-4 text-cyan-400" />
+                  <span>{distanceMeters !== null ? `${formatDistance(distanceMeters)} restants` : 'Position en calcul...'}</span>
                 </div>
-                <span className="text-[11px] text-slate-400 font-medium">Temps restant estimé</span>
+                <span className="text-[11px] text-cyan-400">
+                  {distanceMeters !== null && distanceMeters < 80 ? '🎯 Arrivée imminente' : 'Surveillance GPS'}
+                </span>
               </div>
             </div>
 
-            {/* Emergency Action Buttons Bar */}
-            <div className="grid grid-cols-2 gap-2.5">
-              {/* 1. Dissuasive Siren Button */}
+            {/* Quick Actions (Siren, SOS, Share) */}
+            <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={toggleWalkSiren}
-                className={`py-3 px-3 rounded-2xl border font-black text-xs flex items-center justify-center gap-2 transition-all active:scale-95 ${
+                className={`py-3 px-3 rounded-2xl border font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-95 ${
                   walkSession.isSirenActive
-                    ? 'bg-red-600 text-white border-red-500 shadow-glow-danger animate-pulse'
-                    : 'bg-red-500/15 text-red-500 hover:bg-red-500/25 border-red-500/30'
+                    ? 'bg-amber-500 text-white border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] animate-pulse'
+                    : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
                 }`}
               >
-                {walkSession.isSirenActive ? (
-                  <>
-                    <VolumeX className="w-4 h-4" /> Couper Sirène
-                  </>
-                ) : (
-                  <>
-                    <Volume2 className="w-4 h-4" /> Sirène 110dB
-                  </>
-                )}
+                {walkSession.isSirenActive ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4 text-amber-400" />}
+                <span>{walkSession.isSirenActive ? 'Arrêter sirène' : 'Sirène 110dB'}</span>
               </button>
 
-              {/* 2. SOS Immediate Alert */}
               <button
                 onClick={triggerWalkAlert}
                 className="py-3 px-3 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all"
               >
-                <AlertTriangle className="w-4 h-4" /> SOS Détresse
+                <AlertTriangle className="w-4 h-4" /> SOS Alerte
               </button>
             </div>
 
-            {/* Live Share Button */}
+            {/* Live Tracking Share Link */}
             <button
               onClick={handleShareWalk}
               className={`w-full py-3 rounded-2xl border font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-95 ${
                 copiedLink
                   ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                  : 'bg-blue-500/15 text-s-primary hover:bg-blue-500/25 border-blue-500/30'
+                  : 'bg-blue-500/10 text-cyan-400 hover:bg-blue-500/20 border-cyan-500/30'
               }`}
             >
               {copiedLink ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
-              <span>{copiedLink ? 'Lien de suivi copié !' : 'Partager mon suivi en direct (SMS / WhatsApp)'}</span>
+              <span>{copiedLink ? 'Lien de suivi copié !' : 'Partager mon trajet en direct (SMS / WhatsApp)'}</span>
             </button>
 
             {/* Arrival & Cancel Actions */}
             <div className="flex items-center gap-2 pt-1">
               <button
                 onClick={() => endWalkSession('arrived')}
-                className="flex-1 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-md transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                className="flex-1 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-md transition-all active:scale-95 flex items-center justify-center gap-1.5"
               >
                 <CheckCircle className="w-4 h-4" /> Je suis bien arrivé(e)
               </button>
               <button
                 onClick={() => endWalkSession('idle')}
-                className="px-3.5 py-3 rounded-2xl bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold text-xs hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors"
+                className="px-4 py-3.5 rounded-2xl bg-white/5 hover:bg-white/10 text-slate-400 font-bold text-xs transition-colors"
                 title="Arrêter le trajet sans alerte"
               >
                 Annuler
@@ -319,106 +464,60 @@ export const WalkWithMeSheet: React.FC = () => {
           </div>
         )}
 
-        {/* ── CASE 3: CONFIGURATION SETUP (NO WALK ACTIVE) ────────────── */}
+        {/* ── CASE 4: SETUP & DESTINATION SELECTION ──────────────────── */}
         {!walkSession && (
           <div className="flex flex-col gap-4 animate-fade-in">
-            {/* Description Banner */}
-            <div className="p-3.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs leading-relaxed flex items-start gap-2.5">
-              <Shield className="w-4 h-4 shrink-0 mt-0.5 text-cyan-400" />
-              <span>
-                Safety surveille votre progression, vous alerte des zones à risque sur votre trajet et prévient vos proches si vous ne confirmez pas votre arrivée.
-              </span>
-            </div>
+            {/* Notification Permission Pill if default */}
+            {notificationPermission === 'default' && (
+              <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-between text-xs text-blue-300">
+                <div className="flex items-center gap-2">
+                  <Bell className="w-4 h-4 text-blue-400 shrink-0" />
+                  <span>Activer les alertes d'arrivée sur votre appareil</span>
+                </div>
+                <button
+                  onClick={handleRequestNotifications}
+                  className="px-2.5 py-1 rounded-xl bg-blue-600 text-white font-bold text-[11px] hover:bg-blue-500 shrink-0"
+                >
+                  Autoriser
+                </button>
+              </div>
+            )}
 
-            {/* Destination Input & Search */}
+            {/* Destination Search Box */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-bold text-slate-400 flex items-center justify-between">
-                <span>Destination d'arrivée</span>
+                <span>Où allez-vous ?</span>
                 {selectedPlace && (
-                  <span className="text-emerald-500 text-[10px] font-black">Sélectionné ✓</span>
+                  <span className="text-emerald-400 text-[11px] font-black flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" /> Sélectionné
+                  </span>
                 )}
               </label>
 
               <div className="relative">
                 <input
                   type="text"
-                  placeholder="Où allez-vous ? (ex: Gare, Domicile, Rue...)"
+                  placeholder="Rechercher une adresse, gare, station..."
                   value={selectedPlace ? selectedPlace.name : destinationQuery}
                   onChange={(e) => {
                     setSelectedPlace(null);
                     setDestinationQuery(e.target.value);
                   }}
-                  className={`w-full px-3.5 py-2.5 rounded-2xl border text-xs font-medium outline-hidden transition-all ${
+                  className={`w-full px-4 py-3 rounded-2xl border text-xs font-medium outline-hidden transition-all shadow-inner ${
                     isDark
-                      ? 'bg-slate-800/80 border-slate-700 focus:border-cyan-500 text-white placeholder-slate-500'
+                      ? 'bg-slate-900/80 border-white/10 focus:border-cyan-500 text-white placeholder-slate-500'
                       : 'bg-slate-50 border-slate-200 focus:border-cyan-600 text-slate-900 placeholder-slate-400'
                   }`}
                 />
                 {isSearching && (
-                  <Loader2 className="w-4 h-4 text-cyan-500 animate-spin absolute right-3.5 top-3" />
-                )}
-              </div>
-
-              {/* Quick Preset Favorites Chips */}
-              <div className="flex items-center gap-1.5 overflow-x-auto py-1 no-scrollbar">
-                {favorites.map((fav) => (
-                  <button
-                    key={fav.id}
-                    onClick={() => {
-                      hapticFeedback('light');
-                      setSelectedPlace({
-                        name: fav.name,
-                        coords: [fav.latitude, fav.longitude],
-                      });
-                      setDestinationQuery(fav.name);
-                      setSearchResults([]);
-                    }}
-                    className={`shrink-0 px-2.5 py-1.5 rounded-xl border text-[11px] font-bold flex items-center gap-1.5 transition-all ${
-                      selectedPlace?.name === fav.name
-                        ? 'bg-cyan-500 text-white border-cyan-500 shadow-xs'
-                        : isDark
-                        ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
-                        : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    {fav.place_type === 'home' ? (
-                      <Home className="w-3 h-3" />
-                    ) : (
-                      <Briefcase className="w-3 h-3" />
-                    )}
-                    <span>{fav.name}</span>
-                  </button>
-                ))}
-
-                {/* Default Paris landmark fallback if no favorites */}
-                {favorites.length === 0 && (
-                  <>
-                    <button
-                      onClick={() => {
-                        setSelectedPlace({ name: 'Domicile', coords: [48.8566, 2.3522] });
-                        setDestinationQuery('Domicile');
-                      }}
-                      className="shrink-0 px-2.5 py-1.5 rounded-xl border border-slate-700 bg-slate-800 text-[11px] font-bold text-slate-300 hover:text-white flex items-center gap-1"
-                    >
-                      <Home className="w-3 h-3" /> Domicile
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSelectedPlace({ name: 'Gare la plus proche', coords: [48.8763, 2.3592] });
-                        setDestinationQuery('Gare la plus proche');
-                      }}
-                      className="shrink-0 px-2.5 py-1.5 rounded-xl border border-slate-700 bg-slate-800 text-[11px] font-bold text-slate-300 hover:text-white flex items-center gap-1"
-                    >
-                      <MapPin className="w-3 h-3" /> Gare
-                    </button>
-                  </>
+                  <Loader2 className="w-4 h-4 text-cyan-400 animate-spin absolute right-3.5 top-3.5" />
                 )}
               </div>
 
               {/* Autocomplete Results Dropdown */}
               {searchResults.length > 0 && !selectedPlace && (
-                <div className={`mt-1 max-h-36 overflow-y-auto rounded-2xl border p-1 flex flex-col gap-1 shadow-lg ${
-                  isDark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
+                <div className={`mt-1 max-h-40 overflow-y-auto rounded-2xl border p-1.5 flex flex-col gap-1 shadow-2xl z-20 ${
+                  isDark ? 'bg-slate-900 border-white/10' : 'bg-white border-slate-200'
                 }`}>
                   {searchResults.map((place) => (
                     <button
@@ -428,14 +527,15 @@ export const WalkWithMeSheet: React.FC = () => {
                         setSelectedPlace({
                           name: place.name,
                           coords: [place.latitude, place.longitude],
+                          address: place.displayName,
                         });
                         setDestinationQuery(place.name);
                         setSearchResults([]);
                       }}
-                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold hover:bg-cyan-500/10 hover:text-cyan-500 transition-colors flex items-center justify-between"
+                      className="w-full text-left px-3 py-2.5 rounded-xl text-xs font-semibold hover:bg-cyan-500/10 hover:text-cyan-400 transition-colors flex items-center justify-between"
                     >
-                      <div className="truncate">
-                        <span className="font-bold block">{place.name}</span>
+                      <div className="truncate pr-2">
+                        <span className="font-bold block truncate">{place.name}</span>
                         <span className="text-[10px] text-slate-400 block truncate">{place.displayName}</span>
                       </div>
                       <ChevronRight className="w-3.5 h-3.5 shrink-0 text-slate-400" />
@@ -445,46 +545,193 @@ export const WalkWithMeSheet: React.FC = () => {
               )}
             </div>
 
-            {/* Duration Selector */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5" /> Durée de marche estimée
-              </label>
-              <div className="grid grid-cols-5 gap-1.5">
-                {[5, 10, 15, 25, 40].map((m) => (
+            {/* ── Category Chips for Real Closest POIs ─────────────────── */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-400">
+                  Lieux sécurisés les plus proches
+                </span>
+                {!userLocation && (
                   <button
-                    key={m}
+                    onClick={() => requestUserLocation({ forceRecenter: true })}
+                    className="text-[11px] text-cyan-400 font-bold hover:underline flex items-center gap-1"
+                  >
+                    <Compass className="w-3 h-3" /> Activer GPS
+                  </button>
+                )}
+              </div>
+
+              {/* Category Segmented Selector */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                {POI_CATEGORIES.map((cat) => (
+                  <button
+                    key={cat.id}
                     onClick={() => {
                       hapticFeedback('light');
-                      setEstimatedMinutes(m);
+                      setActiveCategory(cat.id);
                     }}
-                    className={`py-2 rounded-xl text-xs font-bold border transition-all ${
-                      estimatedMinutes === m
-                        ? 'bg-cyan-500 text-white border-cyan-500 shadow-sm'
-                        : isDark
-                        ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
-                        : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 flex items-center gap-1.5 transition-all ${
+                      activeCategory === cat.id
+                        ? 'bg-cyan-500 text-white shadow-[0_0_12px_rgba(6,182,212,0.4)]'
+                        : 'bg-white/5 hover:bg-white/10 text-slate-300 border border-white/5'
                     }`}
                   >
-                    {m} min
+                    <span>{cat.icon}</span>
+                    <span>{cat.label}</span>
                   </button>
                 ))}
               </div>
+
+              {/* Real Closest POI Cards */}
+              <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto pr-0.5">
+                {activeCategory === 'favorites' ? (
+                  // User Favorites List
+                  favorites.length > 0 ? (
+                    favorites.map((fav) => (
+                      <button
+                        key={fav.id}
+                        onClick={() => {
+                          hapticFeedback('light');
+                          setSelectedPlace({
+                            name: fav.name,
+                            coords: [fav.latitude, fav.longitude],
+                            address: fav.address,
+                          });
+                          setDestinationQuery(fav.name);
+                        }}
+                        className={`w-full p-2.5 rounded-2xl border text-left flex items-center justify-between transition-all ${
+                          selectedPlace?.name === fav.name
+                            ? 'bg-cyan-500/15 border-cyan-500 text-cyan-300'
+                            : 'bg-white/5 hover:bg-white/10 border-white/5 text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 truncate">
+                          <span className="text-base">{fav.place_type === 'home' ? '🏠' : '💼'}</span>
+                          <div className="truncate">
+                            <span className="font-bold text-xs block truncate">{fav.name}</span>
+                            <span className="text-[10px] text-slate-400 block truncate">{fav.address}</span>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                      </button>
+                    ))
+                  ) : (
+                    <div className="p-3 rounded-2xl bg-white/5 text-center text-xs text-slate-400">
+                      Aucun favori enregistré. Ajoutez votre domicile ou travail dans vos favoris.
+                    </div>
+                  )
+                ) : isLoadingPois ? (
+                  <div className="p-4 rounded-2xl bg-white/5 flex items-center justify-center gap-2 text-xs text-slate-400">
+                    <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                    <span>Recherche des lieux réels autour de vous...</span>
+                  </div>
+                ) : nearbyPois.length > 0 ? (
+                  nearbyPois.map((poi) => (
+                    <button
+                      key={poi.id}
+                      onClick={() => {
+                        hapticFeedback('light');
+                        setSelectedPlace({
+                          name: poi.name,
+                          coords: [poi.latitude, poi.longitude],
+                          address: poi.address,
+                        });
+                        setDestinationQuery(poi.name);
+                      }}
+                      className={`w-full p-2.5 rounded-2xl border text-left flex items-center justify-between transition-all ${
+                        selectedPlace?.name === poi.name
+                          ? 'bg-cyan-500/15 border-cyan-500 text-cyan-300 shadow-[0_0_15px_rgba(6,182,212,0.2)]'
+                          : 'bg-white/5 hover:bg-white/10 border-white/5 text-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="text-base">{poi.categoryIcon}</span>
+                        <div className="truncate">
+                          <span className="font-bold text-xs block truncate">{poi.name}</span>
+                          <span className="text-[10px] text-slate-400 block truncate">{poi.address}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="text-right">
+                          <span className="text-[11px] font-black text-cyan-400 block">
+                            à {poi.estimate.formattedDistance}
+                          </span>
+                          <span className="text-[9px] text-slate-400 block">
+                            ~{poi.estimate.totalEstimatedMinutes} min
+                          </span>
+                        </div>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="p-3 rounded-2xl bg-white/5 text-center text-xs text-slate-400">
+                    Aucun point trouvé à proximité immédiate.
+                  </div>
+                )}
+              </div>
             </div>
 
-            {/* Optional Contact Input */}
+            {/* ── Mathematical Chrono Calculation Card ─────────────────── */}
+            {mathematicalEstimate && (
+              <div className="p-4 rounded-3xl bg-gradient-to-br from-cyan-500/15 via-blue-600/10 to-transparent border border-cyan-500/30 flex flex-col gap-2.5 shadow-md">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-cyan-400">
+                    <Clock className="w-4 h-4" />
+                    <span>Temps de marche calculé mathématiquement</span>
+                  </div>
+                  <span className="text-xl font-mono font-black text-white">
+                    {mathematicalEstimate.finalMinutes} min
+                  </span>
+                </div>
+
+                <div className="text-[11px] leading-relaxed text-slate-300">
+                  Distance réelle : <strong className="text-white">{mathematicalEstimate.formattedDistance}</strong> à allure piétonne standard (4,5 km/h). Marge de sécurité incluse (+2 min).
+                </div>
+
+                {/* Extra Buffer Nudge Buttons */}
+                <div className="flex items-center gap-1.5 pt-1">
+                  <span className="text-[10px] font-bold text-slate-400">Marge supplémentaire :</span>
+                  {[0, 2, 5, 10].map((mins) => (
+                    <button
+                      key={mins}
+                      onClick={() => {
+                        hapticFeedback('light');
+                        setExtraBufferMinutes(mins);
+                      }}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all ${
+                        extraBufferMinutes === mins
+                          ? 'bg-cyan-500 text-white border-cyan-500'
+                          : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      {mins === 0 ? 'Normal' : `+${mins} min`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Emergency Contact Group */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
-                <Phone className="w-3.5 h-3.5" /> Contact d'urgence (Optionnel)
+              <label className="text-xs font-bold text-slate-400 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Phone className="w-3.5 h-3.5 text-cyan-400" /> Contact d'urgence (Optionnel)
+                </span>
+                <span className="text-[10px] text-slate-500">Appelé si alerte non validée</span>
               </label>
+
               <div className="grid grid-cols-2 gap-2">
                 <input
                   type="text"
-                  placeholder="Nom (ex: Maman)"
+                  placeholder="Nom (ex: Maman, Lucas)"
                   value={contactName}
                   onChange={(e) => setContactName(e.target.value)}
-                  className={`px-3 py-2 rounded-xl border text-xs outline-hidden ${
-                    isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                  className={`px-3 py-2.5 rounded-2xl border text-xs font-medium outline-hidden ${
+                    isDark
+                      ? 'bg-slate-900/80 border-white/10 focus:border-cyan-500 text-white placeholder-slate-500'
+                      : 'bg-slate-50 border-slate-200 focus:border-cyan-600 text-slate-900 placeholder-slate-400'
                   }`}
                 />
                 <input
@@ -492,8 +739,10 @@ export const WalkWithMeSheet: React.FC = () => {
                   placeholder="Numéro (06...)"
                   value={contactPhone}
                   onChange={(e) => setContactPhone(e.target.value)}
-                  className={`px-3 py-2 rounded-xl border text-xs outline-hidden ${
-                    isDark ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                  className={`px-3 py-2.5 rounded-2xl border text-xs font-medium outline-hidden ${
+                    isDark
+                      ? 'bg-slate-900/80 border-white/10 focus:border-cyan-500 text-white placeholder-slate-500'
+                      : 'bg-slate-50 border-slate-200 focus:border-cyan-600 text-slate-900 placeholder-slate-400'
                   }`}
                 />
               </div>
@@ -503,13 +752,13 @@ export const WalkWithMeSheet: React.FC = () => {
             <button
               onClick={handleStartWalk}
               disabled={!selectedPlace}
-              className={`w-full py-3.5 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xl transition-all duration-200 active:scale-95 ${
+              className={`w-full py-3.5 rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-lg transition-all active:scale-95 ${
                 selectedPlace
-                  ? 'bg-gradient-to-r from-cyan-600 via-sky-500 to-blue-600 text-white hover:brightness-110 shadow-cyan-500/25 cursor-pointer'
-                  : 'bg-slate-700 text-slate-400 cursor-not-allowed opacity-60'
+                  ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-[0_8px_25px_rgba(6,182,212,0.4)] cursor-pointer'
+                  : 'bg-white/10 text-slate-500 border border-white/5 cursor-not-allowed'
               }`}
             >
-              <span>Lancer le Trajet Sécurisé</span>
+              <span>Démarrer le Trajet Sécurisé</span>
               <ArrowRight className="w-4 h-4 stroke-[2.5]" />
             </button>
           </div>

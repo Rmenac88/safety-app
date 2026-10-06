@@ -10,7 +10,7 @@ import { fetchNotifications, markNotificationRead, deleteNotificationApi, clearA
 import type { NotificationDTO } from '../api/notificationsApi';
 import { getDeviceId } from '../api/client';
 import type { DrawingMode, GeoJSONGeometry, IncidentCategory, WalkSession } from '../types/safety';
-import { playEmergencySiren, stopEmergencySiren } from '../utils/sirenAudio';
+import { playEmergencySiren, stopEmergencySiren, playWarningBeep } from '../utils/sirenAudio';
 import { calculateDistance } from '../utils/geoUtils';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1148,12 +1148,29 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           }
         }
 
-        // Safety check deadline countdown
+        // Safety check deadline countdown (User has 30s to confirm they are safe)
         if (prev.safetyCheckPending) {
           const nextDeadline = prev.checkDeadlineSeconds - 1;
           if (nextDeadline <= 0) {
             playEmergencySiren();
             hapticFeedback('heavy');
+
+            // 🚨 Automatic Emergency Call Trigger (Police 17 or contact number)
+            const emergencyPhone = prev.contactPhone?.trim() || '17';
+            try {
+              window.location.href = `tel:${emergencyPhone}`;
+            } catch {}
+
+            try {
+              if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('🚨 URGENCE : Aucune confirmation reçue', {
+                  body: `L'alerte d'urgence a été déclenchée. Appel vers le ${emergencyPhone} en cours.`,
+                  icon: '/favicon.ico',
+                  tag: 'safety-sos-triggered',
+                });
+              }
+            } catch {}
+
             return {
               ...prev,
               status: 'alert',
@@ -1165,13 +1182,25 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           return { ...prev, checkDeadlineSeconds: nextDeadline };
         }
 
-        // Trigger safety check prompt if time expired
+        // Trigger safety check prompt if estimated walking time expired
         if (now >= prev.targetArrivalTimestamp && !prev.safetyCheckPending) {
           hapticFeedback('heavy');
+          playWarningBeep();
+
+          try {
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification('🚨 Contrôle de sécurité Safety', {
+                body: `Votre temps estimé vers « ${prev.destinationName} » est écoulé. Confirmez votre sécurité sous 30s.`,
+                icon: '/favicon.ico',
+                tag: 'safety-arrival-check',
+              });
+            }
+          } catch {}
+
           return {
             ...prev,
             safetyCheckPending: true,
-            checkDeadlineSeconds: 45,
+            checkDeadlineSeconds: 30,
           };
         }
 
