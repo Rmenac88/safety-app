@@ -118,6 +118,15 @@ export const SafetyMapboxEngine: React.FC = () => {
   const hapticFeedbackRef = useRef(hapticFeedback);
   hapticFeedbackRef.current = hapticFeedback;
 
+  const mapCenterRef = useRef(mapCenter);
+  mapCenterRef.current = mapCenter;
+
+  const mapZoomRef = useRef(mapZoom);
+  mapZoomRef.current = mapZoom;
+
+  const mapPitchRef = useRef(mapPitch);
+  mapPitchRef.current = mapPitch;
+
   // ── Atmosphere / Lighting ──────────────────────────────────────────────────
   const applyAtmosphere = useCallback((map: mapboxgl.Map, dark: boolean) => {
     try {
@@ -410,15 +419,18 @@ export const SafetyMapboxEngine: React.FC = () => {
   // ── 3a. Silky Smooth Camera Navigation on Nonce Trigger ──────────────────
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapCenter || cameraNonce === 0) return;
+    if (!map || cameraNonce === 0) return;
+
+    const currentTarget = mapCenterRef.current || mapCenter;
+    if (!currentTarget) return;
 
     // Stop Earth rotation completely when zooming into a location
     isSpinningRef.current = false;
     if (spinTimerRef.current) clearTimeout(spinTimerRef.current);
 
-    const targetLngLat: [number, number] = [mapCenter[1], mapCenter[0]];
-    const targetZoom = mapZoom || 16.2;
-    const targetPitch = mapPitch !== undefined ? mapPitch : 35;
+    const targetLngLat: [number, number] = [currentTarget[1], currentTarget[0]];
+    const targetZoom = mapZoomRef.current || mapZoom || 16.2;
+    const targetPitch = mapPitchRef.current !== undefined ? mapPitchRef.current : (mapPitch !== undefined ? mapPitch : 35);
 
     try {
       const currentCenter = map.getCenter();
@@ -450,7 +462,7 @@ export const SafetyMapboxEngine: React.FC = () => {
     } catch (err) {
       console.warn('[SafetyMapboxEngine] camera navigation notice:', err);
     }
-  }, [cameraNonce]);
+  }, [cameraNonce, mapCenter, mapZoom, mapPitch]);
 
   // ── 3b. Direct 3D Tilt Pitch In-Place EaseTo ──────────────────────────────
   const prevPitchRef = useRef(mapPitch);

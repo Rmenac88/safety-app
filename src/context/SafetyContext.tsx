@@ -579,20 +579,63 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [hapticFeedback]
   );
 
+  // ── Network / IP Location Fallback (Instantaneous <150ms) ────────────────
+  const fallbackIpLocation = useCallback(
+    async (forceRecenter = true) => {
+      try {
+        const res = await fetch('https://ipwho.is/');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.success && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
+            const coords: [number, number] = [data.latitude, data.longitude];
+            setUserLocation(coords);
+            setGpsAccuracyMeters(1000);
+            if (forceRecenter) {
+              setMapCenterState([...coords]);
+              setMapZoomState(15.5);
+              setMapPitchState(35);
+              setCameraNonce((n) => n + 1);
+            }
+            hapticFeedback('success');
+            return true;
+          }
+        }
+      } catch {}
+
+      try {
+        const res2 = await fetch('https://get.geojs.io/v1/ip/geo.json');
+        if (res2.ok) {
+          const data2 = await res2.json();
+          const pLat = parseFloat(data2.latitude);
+          const pLon = parseFloat(data2.longitude);
+          if (!isNaN(pLat) && !isNaN(pLon)) {
+            const coords: [number, number] = [pLat, pLon];
+            setUserLocation(coords);
+            setGpsAccuracyMeters(1000);
+            if (forceRecenter) {
+              setMapCenterState([...coords]);
+              setMapZoomState(15.5);
+              setMapPitchState(35);
+              setCameraNonce((n) => n + 1);
+            }
+            hapticFeedback('success');
+            return true;
+          }
+        }
+      } catch {}
+
+      return false;
+    },
+    [hapticFeedback]
+  );
+
   const requestUserLocation = useCallback(
-    (opts?: { silent?: boolean; forceRecenter?: boolean }) => {
+    async (opts?: { silent?: boolean; forceRecenter?: boolean }) => {
       const silent = opts?.silent ?? false;
       const forceRecenter = opts?.forceRecenter ?? true;
 
-      if (!navigator.geolocation) {
-        setGpsState('unavailable');
-        return;
-      }
-
-      // If user location is ALREADY known: IMMEDIATELY glide right to user location!
-      // Zero lag, zero stutter, zero redundant re-renders.
+      // 1. If user location is ALREADY known: IMMEDIATELY glide right to user location!
       if (userLocation && forceRecenter) {
-        setGpsState('granted');
         setMapCenterState([...userLocation]);
         setMapZoomState(16.2);
         setMapPitchState(35);
@@ -601,64 +644,59 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return;
       }
 
-      // First-time location request (userLocation is null):
       setGpsState('locating');
       if (!silent) hapticFeedback('medium');
 
-      const handleSuccess = (pos: GeolocationPosition) => {
-        applyGpsPosition(pos, silent, forceRecenter);
-      };
+      // 2. High-speed low-latency Geolocation request (max 3.5s timeout, allow cached)
+      if (typeof window !== 'undefined' && navigator.geolocation) {
+        let hasResolved = false;
 
-      // Resilient 2-stage acquisition:
-      // Try high accuracy with 7s timeout
-      navigator.geolocation.getCurrentPosition(
-        handleSuccess,
-        (err1) => {
-          console.warn('[Safety GPS] High accuracy notice (code %d): %s', err1.code, err1.message);
-          if (err1.code === 1 /* PERMISSION_DENIED */) {
-            setGpsState('denied');
-            return;
+        const handleSuccess = (pos: GeolocationPosition) => {
+          if (hasResolved) return;
+          hasResolved = true;
+          applyGpsPosition(pos, silent, forceRecenter);
+
+          // Start continuous background watch if not already active
+          if (watchIdRef.current === null) {
+            try {
+              watchIdRef.current = navigator.geolocation.watchPosition(
+                (freshPos) => {
+                  const freshCoords: [number, number] = [freshPos.coords.latitude, freshPos.coords.longitude];
+                  setUserLocation(freshCoords);
+                  setGpsAccuracyMeters(freshPos.coords.accuracy || 15);
+                  setGpsState('granted');
+                },
+                () => {},
+                { enableHighAccuracy: false, maximumAge: 15000 }
+              );
+            } catch {}
           }
+        };
 
-          // Fallback immediately to network/Wi-Fi triangulation (resolves in <100ms)
-          navigator.geolocation.getCurrentPosition(
-            handleSuccess,
-            (err2) => {
-              console.warn('[Safety GPS] Network fallback notice (code %d): %s', err2.code, err2.message);
-              if (err2.code === 1 /* PERMISSION_DENIED */) {
-                setGpsState('denied');
-              } else {
-                setGpsState(userLocation ? 'granted' : 'unavailable');
-              }
-            },
-            { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
-          );
-        },
-        { enableHighAccuracy: true, timeout: 7000, maximumAge: 30000 }
-      );
+        // Quick low-accuracy / Wi-Fi check (resolves in ~50ms on mobile and macOS)
+        navigator.geolocation.getCurrentPosition(
+          handleSuccess,
+          async (err) => {
+            console.warn('[Safety GPS] Browser position notice (code %d): %s', err.code, err.message);
 
-      // Continuous Live Walk Tracking via watchPosition
-      if (watchIdRef.current !== null) {
-        try {
-          navigator.geolocation.clearWatch(watchIdRef.current);
-        } catch {}
-        watchIdRef.current = null;
-      }
+            // Attempt instantaneous IP network location fallback
+            const ipSuccess = await fallbackIpLocation(forceRecenter);
 
-      try {
-        watchIdRef.current = navigator.geolocation.watchPosition(
-          (freshPos) => {
-            const freshCoords: [number, number] = [freshPos.coords.latitude, freshPos.coords.longitude];
-            setUserLocation(freshCoords);
-            setGpsAccuracyMeters(freshPos.coords.accuracy || 15);
-            setGpsState('granted');
+            if (err.code === 1 /* PERMISSION_DENIED */) {
+              setGpsState('denied');
+            } else if (ipSuccess) {
+              setGpsState('granted');
+            } else {
+              setGpsState('unavailable');
+            }
           },
-          () => {}, // Silent background watch errors
-          { enableHighAccuracy: false, maximumAge: 15000 }
+          { enableHighAccuracy: false, timeout: 3500, maximumAge: 120000 }
         );
-      } catch {}
+      } else {
+        await fallbackIpLocation(forceRecenter);
+      }
     },
-    [userLocation, hapticFeedback, applyGpsPosition]
+    [userLocation, hapticFeedback, applyGpsPosition, fallbackIpLocation]
   );
 
   // Clear background watchPosition & locating timer on unmount
@@ -679,17 +717,19 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // ── Auto-Detect Geolocation on App Mount if already granted ────────────────
   useEffect(() => {
-    if (typeof window === 'undefined' || !navigator.geolocation) return;
+    if (typeof window === 'undefined') return;
 
-    if (navigator.permissions && navigator.permissions.query) {
+    if (navigator.geolocation && navigator.permissions && navigator.permissions.query) {
       navigator.permissions
         .query({ name: 'geolocation' as PermissionName })
         .then((status) => {
           if (status.state === 'granted') {
-            // Already authorized from previous visit -> auto-locate silently!
             requestUserLocation({ silent: true, forceRecenter: true });
           } else if (status.state === 'denied') {
             setGpsState('denied');
+            fallbackIpLocation(false);
+          } else {
+            fallbackIpLocation(false);
           }
 
           status.onchange = () => {
@@ -700,9 +740,13 @@ export const SafetyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             }
           };
         })
-        .catch(() => {});
+        .catch(() => {
+          fallbackIpLocation(false);
+        });
+    } else {
+      fallbackIpLocation(false);
     }
-  }, [requestUserLocation]);
+  }, [requestUserLocation, fallbackIpLocation]);
 
   // ── Map Camera Controls ───────────────────────────────────────────────────
   const setMapCenter = useCallback((coords: [number, number], zoom?: number) => {

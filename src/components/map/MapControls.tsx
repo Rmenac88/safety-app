@@ -14,18 +14,18 @@ export const MapControls: React.FC = () => {
   const isDark = filters.mapTileStyle === 'dark';
 
   const handleGpsClick = () => {
-    if (gpsState === 'denied') {
-      setShowGpsHint(true);
-      hapticFeedback('heavy');
-      setTimeout(() => setShowGpsHint(false), 4500);
-    }
+    hapticFeedback('medium');
     requestUserLocation({ silent: false, forceRecenter: true });
+    if (gpsState === 'denied' || gpsState === 'unavailable') {
+      setShowGpsHint(true);
+      setTimeout(() => setShowGpsHint(false), 5000);
+    }
   };
 
   const gpsColor = gpsState === 'granted'
     ? 'text-s-primary ring-1 ring-blue-500/40 bg-blue-50/80 dark:bg-blue-950/40'
     : gpsState === 'denied'
-    ? 'text-s-danger ring-1 ring-red-500/40 bg-red-50/80 dark:bg-red-950/40'
+    ? 'text-amber-500 ring-1 ring-amber-500/40 bg-amber-50/80 dark:bg-amber-950/40'
     : isDark ? 'text-slate-400' : 'text-slate-600';
 
   const btnBase = `w-10 h-10 sm:w-11 sm:h-11 backdrop-blur-2xl rounded-2xl flex items-center justify-center shadow-island transition-all active:scale-90 border touch-manipulation select-none cursor-pointer ${
@@ -50,13 +50,23 @@ export const MapControls: React.FC = () => {
     <div className="fixed right-3 sm:right-4 bottom-28 sm:bottom-auto sm:top-24 z-20 flex flex-col items-end gap-2 sm:gap-2.5 pointer-events-auto transition-all duration-300">
       {/* ── GPS Denied Explanatory Popover ─────────────────────────────────── */}
       {showGpsHint && (
-        <div className="absolute right-12 top-0 w-64 p-2.5 rounded-2xl bg-slate-900/95 border border-red-500/50 shadow-2xl text-white text-xs backdrop-blur-xl animate-fade-in pointer-events-none">
-          <p className="font-bold text-red-400 flex items-center gap-1.5 mb-1">
-            <Navigation className="w-3.5 h-3.5 shrink-0" />
-            Accès position désactivé
-          </p>
+        <div className="absolute right-14 top-0 w-72 p-3.5 rounded-2xl bg-slate-950/95 border border-cyan-500/40 shadow-2xl text-white text-xs backdrop-blur-xl animate-fade-in pointer-events-auto z-30">
+          <div className="flex items-start justify-between gap-2 mb-1.5">
+            <p className="font-bold text-cyan-400 flex items-center gap-1.5">
+              <Navigation className="w-3.5 h-3.5 shrink-0" />
+              Position Géographique
+            </p>
+            <button
+              onClick={() => setShowGpsHint(false)}
+              className="text-slate-400 hover:text-white text-xs p-0.5"
+            >
+              ✕
+            </button>
+          </div>
           <p className="text-[11px] leading-relaxed text-slate-300">
-            Activez la localisation dans les réglages de votre navigateur pour centrer la carte sur votre position.
+            {gpsState === 'denied'
+              ? "Accès GPS direct bloqué dans votre navigateur. Pour une précision rue, autorisez la localisation via l'icône 🔒 à gauche de l'adresse web. Votre secteur a été localisé par le réseau."
+              : "Acquisition de la position en cours. La carte se centre automatiquement sur votre zone."}
           </p>
         </div>
       )}
