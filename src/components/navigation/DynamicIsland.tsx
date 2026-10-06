@@ -135,7 +135,7 @@ export const DynamicIsland: React.FC = () => {
     abortRef.current = ctrl;
     setIsSearching(true);
     const timer = setTimeout(async () => {
-      const places = await searchPlaces(query, ctrl.signal);
+      const places = await searchPlaces(query, ctrl.signal, userLocation || undefined);
       setResults(places);
       setIsSearching(false);
     }, 240);
@@ -544,18 +544,24 @@ export const DynamicIsland: React.FC = () => {
                     <button
                       key={place.placeId}
                       onClick={() => handleSelectPlace(place)}
-                      className="w-full flex items-start gap-3 p-3 rounded-2xl bg-slate-50 hover:bg-blue-50/60 border border-slate-200/60 transition-all text-left group active:scale-[0.98]"
+                      className={`w-full flex items-start gap-3 p-3 rounded-2xl border transition-all text-left group active:scale-[0.98] ${
+                        isDark
+                          ? 'bg-slate-800/80 hover:bg-slate-700/80 border-slate-700/70 text-white'
+                          : 'bg-slate-50 hover:bg-blue-50/60 border-slate-200/60 text-slate-900'
+                      }`}
                     >
-                      <div className="mt-0.5 w-8 h-8 rounded-xl bg-blue-100 flex items-center justify-center shrink-0 text-s-primary group-hover:bg-s-primary group-hover:text-white transition-colors">
+                      <div className="mt-0.5 w-8 h-8 rounded-xl bg-cyan-500/15 flex items-center justify-center shrink-0 text-cyan-400 group-hover:bg-cyan-500 group-hover:text-white transition-colors">
                         <MapPin className="w-4 h-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs font-bold text-slate-900 truncate group-hover:text-s-primary transition-colors">
+                        <div className={`text-xs font-bold truncate group-hover:text-cyan-400 transition-colors ${
+                          isDark ? 'text-white' : 'text-slate-900'
+                        }`}>
                           {place.name}
                         </div>
-                        <div className="text-2xs text-slate-500 truncate mt-0.5">{place.displayName}</div>
+                        <div className="text-[11px] text-slate-400 truncate mt-0.5">{place.displayName}</div>
                       </div>
-                      <ChevronRight className="w-4 h-4 text-slate-400 self-center group-hover:text-slate-700" />
+                      <ChevronRight className="w-4 h-4 text-slate-400 self-center group-hover:text-slate-200 shrink-0" />
                     </button>
                   ))
                 ) : query.length >= 2 && !isSearching ? (

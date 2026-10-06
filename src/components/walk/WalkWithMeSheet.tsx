@@ -100,7 +100,7 @@ export const WalkWithMeSheet: React.FC = () => {
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const places = await searchPlaces(destinationQuery);
+        const places = await searchPlaces(destinationQuery, undefined, userLocation || undefined);
         setSearchResults(places);
       } catch (err) {
         console.warn('Geocoding search notice:', err);
