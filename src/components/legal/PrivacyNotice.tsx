@@ -3,14 +3,13 @@ import { X, ShieldCheck } from 'lucide-react';
 import { useSafety } from '../../context/useSafety';
 
 /**
- * Notice d'information (RGPD art. 13). PROJET technique, établi à partir du code :
- * les champs [À COMPLÉTER] (responsable, contact, base légale…) doivent être validés
- * par l'éditeur, idéalement avec un conseil juridique.
+ * Notice d'information (RGPD art. 13), établie à partir du fonctionnement réel de l'app.
+ * Éditeur : AP Studio 13. À mettre à jour si les données ou les prestataires changent.
  */
 const SECTIONS: { title: string; body: string[] }[] = [
   {
     title: 'Qui est responsable ?',
-    body: ['[À COMPLÉTER : nom ou raison sociale de l’éditeur, adresse, e-mail de contact pour vos droits].'],
+    body: ['AP Studio 13 (responsable : M. Abdelmalek). Contact pour toute question ou demande liée à vos données : rabdelmalek794@gmail.com.'],
   },
   {
     title: 'Ce que nous traitons, et pourquoi',
@@ -24,7 +23,7 @@ const SECTIONS: { title: string; body: string[] }[] = [
   },
   {
     title: 'Base légale',
-    body: ['[À COMPLÉTER / VALIDER : intérêt légitime (information de sécurité, prévention des abus) ou exécution du service demandé].'],
+    body: ['Intérêt légitime (art. 6-1-f RGPD) : informer la communauté des situations à risque et prévenir les abus. Les favoris sont traités pour fournir le service que vous demandez.'],
   },
   {
     title: 'Durées de conservation',
@@ -39,15 +38,15 @@ const SECTIONS: { title: string; body: string[] }[] = [
     body: [
       'Mapbox (États-Unis) : affichage de la carte et recherche d’adresses ; reçoit votre adresse IP et la zone consultée.',
       'OpenStreetMap / Nominatim, CARTO, OpenFreeMap : fonds de carte et recherche d’adresses.',
-      'Vercel (hébergement) et la base de données [À COMPLÉTER : fournisseur, ex. Neon, et région].',
-      '[À COMPLÉTER : garanties pour les transferts hors UE, ex. clauses contractuelles types / Data Privacy Framework].',
+      'Vercel (hébergement de l’application) et Neon (base de données PostgreSQL).',
+      'Certains de ces prestataires sont situés aux États-Unis : les transferts sont encadrés par les clauses contractuelles types de la Commission européenne et/ou le Data Privacy Framework UE–États-Unis.',
     ],
   },
   {
     title: 'Vos droits',
     body: [
       'Depuis le panneau « Sécurité » : « Exporter mes données » (accès, portabilité) et « Supprimer mes données » (effacement). Vous pouvez aussi rectifier ou supprimer vos favoris et signalements à tout moment.',
-      'Pour toute autre demande (opposition, limitation) : [À COMPLÉTER : contact]. Vous pouvez saisir la CNIL (www.cnil.fr).',
+      'Pour toute autre demande (rectification, opposition, limitation) : rabdelmalek794@gmail.com. Vous pouvez aussi introduire une réclamation auprès de la CNIL (www.cnil.fr).',
     ],
   },
   {
