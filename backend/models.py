@@ -1,8 +1,13 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, Text, Enum as SAEnum
+from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, Text, Index, Enum as SAEnum
 from database import Base
 import enum
+
+
+def _utcnow_naive() -> datetime:
+    """UTC timestamp without tzinfo: columns are 'timestamp without time zone' everywhere."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class IncidentCategory(str, enum.Enum):
@@ -59,7 +64,7 @@ class Incident(Base):
     estimated_duration = Column(String(30), default="2 h")
     geometry_type = Column(String(20), default="point")  # "point" | "street" | "area"
     geojson_geometry = Column(Text, nullable=True)  # GeoJSON string (LineString / Polygon)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=_utcnow_naive, nullable=False)
     expires_at = Column(DateTime, nullable=False)
 
 
@@ -74,7 +79,7 @@ class FavoritePlace(Base):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     notify_radius_m = Column(Integer, default=500)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=_utcnow_naive)
 
 
 class Notification(Base):
@@ -91,7 +96,7 @@ class Notification(Base):
     severity = Column(String(20), default="medium")
     category = Column(String(50), default="other")
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=_utcnow_naive)
 
 
 class AuditLog(Base):
@@ -101,7 +106,7 @@ class AuditLog(Base):
     incident_id = Column(String, nullable=True)
     action = Column(String(50), nullable=False)  # created / confirmed / disputed / resolved / expired
     extra_data = Column(Text, nullable=True)  # JSON string
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=_utcnow_naive)
 
 
 class IncidentVote(Base):
@@ -111,7 +116,7 @@ class IncidentVote(Base):
     incident_id = Column(String, nullable=False, index=True)
     session_id = Column(String(100), nullable=False, index=True)
     vote_type = Column(String(20), nullable=False)  # "confirm" | "dispute"
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=_utcnow_naive)
 
 
 class ModerationEvent(Base):
@@ -125,6 +130,34 @@ class ModerationEvent(Base):
     severity = Column(String(20), nullable=False)
     action = Column(String(30), nullable=False)
     risk_score = Column(Float, nullable=False)
-    rules_version = Column(String(30), default="2026.09.1")
-    model_version = Column(String(30), default="v2.5.0-ctx")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    rules_version = Column(String(30), default="2026.10.1")
+    model_version = Column(String(30), default="v2.6.0-ctx")
+    created_at = Column(DateTime, default=_utcnow_naive, nullable=False)
+
+
+class RateLimitHit(Base):
+    """One row per rate-limited request: shared sliding windows across serverless instances."""
+    __tablename__ = "rate_limit_hits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bucket = Column(String(120), nullable=False)
+    created_at = Column(DateTime, default=_utcnow_naive, nullable=False)
+
+    __table_args__ = (Index("ix_rate_limit_hits_bucket_created", "bucket", "created_at"),)
+
+
+class ModerationReview(Base):
+    """
+    Human moderation queue: incidents published with a REVIEW verdict (mild vulgarity,
+    borderline wording). A moderator approves or rejects them via /api/v1/moderation.
+    """
+    __tablename__ = "moderation_reviews"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    incident_id = Column(String, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending | approved | rejected
+    risk_score = Column(Float, nullable=False)
+    primary_category = Column(String(50), nullable=False)
+    reasons = Column(Text, nullable=True)  # JSON list of internal rule flags (admin only)
+    created_at = Column(DateTime, default=_utcnow_naive, nullable=False)
+    reviewed_at = Column(DateTime, nullable=True)

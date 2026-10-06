@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ShieldCheck, Map, Flame, Bell, X } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 
 const SLIDES = [
   {
@@ -30,7 +30,7 @@ const SLIDES = [
 ];
 
 export const OnboardingModal: React.FC = () => {
-  const { hapticFeedback } = useSafety();
+  const { hapticFeedback, setActiveModal } = useSafety();
   const [step, setStep] = useState(0);
   const [closed, setClosed] = useState(() => localStorage.getItem('safety_onboarded') === '1');
 
@@ -111,6 +111,16 @@ export const OnboardingModal: React.FC = () => {
               Commencer — Explorer la carte
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              handleClose();
+              setActiveModal('privacy');
+            }}
+            className="w-full mt-2 text-2xs font-semibold text-slate-500 hover:text-slate-700 hover:underline"
+          >
+            Confidentialité : aucun compte, position publique approximative — en savoir plus
+          </button>
         </div>
       </div>
     </div>

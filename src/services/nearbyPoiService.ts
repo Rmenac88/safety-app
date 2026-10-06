@@ -2,6 +2,15 @@ import { calculateDistance } from '../utils/geoUtils';
 import { computeWalkingEstimate } from '../utils/walkingMath';
 import type { WalkingEstimate } from '../utils/walkingMath';
 
+/** Fields of a Nominatim search result used here */
+interface NominatimPoi {
+  place_id?: number | string;
+  name?: string;
+  display_name: string;
+  lat: string;
+  lon: string;
+}
+
 export type PoiCategory = 'transit' | 'police' | 'health' | 'havens' | 'favorites';
 
 export interface NearbyPoi {
@@ -85,7 +94,7 @@ export async function fetchNearbyPois(
             signal: options?.signal,
           });
           if (!res.ok) return [];
-          return (await res.json()) as any[];
+          return (await res.json()) as NominatimPoi[];
         } catch {
           return [];
         }

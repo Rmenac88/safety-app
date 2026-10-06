@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
-import { X, Shield, Database, RefreshCw, Sliders, MapPin, AlertTriangle, ArrowRight, CheckCircle2, Flame } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import React, { useMemo, useState } from 'react';
+import { X, Shield, Database, RefreshCw, Sliders, MapPin, AlertTriangle, ArrowRight, CheckCircle2, Flame, Download, Trash2, FileText } from 'lucide-react';
+import { downloadMyData, eraseMyData } from '../../api/privacyApi';
+import { useSafety } from '../../context/useSafety';
 import { categoryColors, categoryIcons } from '../../design/tokens';
 import { AppleToggle } from '../ui/AppleToggle';
 
@@ -34,7 +35,43 @@ export const ModerationDrawer: React.FC = () => {
     filters,
     isHeatmapMode,
     setIsHeatmapMode,
+    myIncidentIds,
   } = useSafety();
+
+  // ── RGPD: export / erasure of the data linked to this device ────────────
+  const [privacyStatus, setPrivacyStatus] = useState<string | null>(null);
+  const [confirmErase, setConfirmErase] = useState(false);
+  const [privacyBusy, setPrivacyBusy] = useState(false);
+
+  const handleExport = async () => {
+    setPrivacyBusy(true);
+    setPrivacyStatus(null);
+    try {
+      await downloadMyData();
+      setPrivacyStatus('Export téléchargé.');
+    } catch {
+      setPrivacyStatus("Export impossible pour le moment (connexion ?). Réessayez.");
+    } finally {
+      setPrivacyBusy(false);
+    }
+  };
+
+  const handleErase = async () => {
+    if (!confirmErase) {
+      setConfirmErase(true);
+      return;
+    }
+    setPrivacyBusy(true);
+    setPrivacyStatus(null);
+    try {
+      await eraseMyData(myIncidentIds);
+      window.location.reload(); // restart with a fresh anonymous identity
+    } catch {
+      setPrivacyStatus('Suppression impossible pour le moment (connexion ?). Rien n’a été effacé localement.');
+      setPrivacyBusy(false);
+      setConfirmErase(false);
+    }
+  };
 
   const isDark = filters.mapTileStyle === 'dark';
 
@@ -283,6 +320,48 @@ export const ModerationDrawer: React.FC = () => {
                 })}
               </div>
             )}
+          </div>
+
+          {/* 4. VOS DONNÉES (RGPD) */}
+          <div className={`p-4 rounded-2xl border flex flex-col gap-2.5 ${
+            isDark ? 'bg-slate-800/40 border-slate-700/60' : 'bg-slate-50 border-slate-200/80'
+          }`}>
+            <span className={`text-xs font-bold uppercase tracking-wider ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              Vos données
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={handleExport}
+                disabled={privacyBusy}
+                className={`py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 disabled:opacity-50 ${
+                  isDark ? 'bg-slate-900 border-slate-700 text-slate-200' : 'bg-white border-slate-200 text-slate-700'
+                }`}
+              >
+                <Download className="w-3.5 h-3.5" /> Exporter mes données
+              </button>
+              <button
+                type="button"
+                onClick={handleErase}
+                disabled={privacyBusy}
+                className="py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-1.5 disabled:opacity-50 border-red-300 text-red-600 bg-red-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> {confirmErase ? 'Confirmer la suppression' : 'Supprimer mes données'}
+              </button>
+            </div>
+            {confirmErase && !privacyBusy && (
+              <p className="text-2xs text-red-600">
+                Vos favoris, votes et signalements seront définitivement supprimés, ainsi que les données de l’application sur cet appareil.
+              </p>
+            )}
+            {privacyStatus && <p className={`text-2xs ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{privacyStatus}</p>}
+            <button
+              type="button"
+              onClick={() => setActiveModal('privacy')}
+              className="text-2xs font-semibold text-s-primary flex items-center gap-1 hover:underline self-start"
+            >
+              <FileText className="w-3 h-3" /> Confidentialité & données personnelles
+            </button>
           </div>
 
           {/* 3. STATS SYSTÈME & BASE SQL TEMPS RÉEL */}

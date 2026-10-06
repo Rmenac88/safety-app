@@ -7,3 +7,8 @@ backend/test_*.py
 node_modules/
 .git/
 .env*
+*.bak
+*.dump
+backend/scripts/
+rushes/
+remotion/

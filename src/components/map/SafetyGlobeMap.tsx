@@ -1,11 +1,12 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useEffectEvent } from 'react';
+import type { Feature, Geometry } from 'geojson';
 import {
   Map as MapLibreMap,
   Marker,
   type GeoJSONSource,
   type MapMouseEvent,
 } from 'maplibre-gl';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categoryColors, categoryEmoji } from '../../design/tokens';
 import { reverseGeocode, fetchStreetGeometry } from '../../api/geocodingApi';
 import { VECTOR_STYLES } from '../../design/mapStyles';
@@ -55,7 +56,7 @@ export const SafetyGlobeMap: React.FC = () => {
   const lastActionTimestampRef = useRef<number>(0);
   const latestLocationRequestIdRef = useRef<number>(0);
 
-  const [dynamicGeometries, setDynamicGeometries] = useState<Record<string, any>>({});
+  const [dynamicGeometries, setDynamicGeometries] = useState<Record<string, Geometry>>({});
 
   const {
     filteredIncidents, userLocation,
@@ -77,7 +78,7 @@ export const SafetyGlobeMap: React.FC = () => {
         intensity: isDark ? 0.35 : 0.55,
         position: [1.5, 180, 45],
       });
-    } catch (e) {}
+    } catch { /* best effort: ignore */ }
 
     if (!map.getLayer('3d-buildings')) {
       const sources = map.getStyle().sources || {};
@@ -113,7 +114,7 @@ export const SafetyGlobeMap: React.FC = () => {
               'fill-extrusion-opacity': 0.88,
             },
           });
-        } catch (e) {}
+        } catch { /* best effort: ignore */ }
       }
     }
   }, [isDark]);
@@ -418,28 +419,29 @@ export const SafetyGlobeMap: React.FC = () => {
     const streetSource = map.getSource(STREET_SOURCE_ID) as GeoJSONSource | undefined;
     const polySource = map.getSource(POLYGON_SOURCE_ID) as GeoJSONSource | undefined;
 
-    const pointFeatures: any[] = [];
-    const streetFeatures: any[] = [];
-    const polyFeatures: any[] = [];
+    const pointFeatures: Feature[] = [];
+    const streetFeatures: Feature[] = [];
+    const polyFeatures: Feature[] = [];
 
-    const extractGeometry = (data: any): any => {
-      if (!data) return null;
-      if (data.type === 'Feature') return data.geometry ?? null;
-      if (data.type === 'FeatureCollection' && data.features?.length > 0) {
-        const first = data.features[0];
-        return first?.geometry ?? null;
+    // Accepts a bare geometry, a Feature or a FeatureCollection (first feature)
+    const extractGeometry = (data: unknown): Geometry | null => {
+      if (!data || typeof data !== 'object') return null;
+      const obj = data as { type?: unknown; geometry?: Geometry | null; features?: Feature[]; coordinates?: unknown };
+      if (obj.type === 'Feature') return obj.geometry ?? null;
+      if (obj.type === 'FeatureCollection' && obj.features && obj.features.length > 0) {
+        return obj.features[0]?.geometry ?? null;
       }
-      if (typeof data.type === 'string' && data.coordinates) return data;
+      if (typeof obj.type === 'string' && obj.coordinates) return data as Geometry;
       return null;
     };
 
     filteredIncidents.forEach((inc) => {
-      let geom: any = null;
+      let geom: Geometry | null = null;
       if (inc.geojson_geometry) {
         try {
-          const parsed = typeof inc.geojson_geometry === 'string' ? JSON.parse(inc.geojson_geometry) : inc.geojson_geometry;
+          const parsed: unknown = typeof inc.geojson_geometry === 'string' ? JSON.parse(inc.geojson_geometry) : inc.geojson_geometry;
           geom = extractGeometry(parsed);
-        } catch {}
+        } catch { /* best effort: ignore */ }
       } else if (dynamicGeometries[inc.id]) {
         geom = extractGeometry(dynamicGeometries[inc.id]);
       }
@@ -447,7 +449,7 @@ export const SafetyGlobeMap: React.FC = () => {
       const color = categoryColors[inc.category] || (inc.severity === 'critical' ? '#DC2626' : inc.severity === 'high' ? '#EF4444' : inc.severity === 'medium' ? '#F59E0B' : '#22C55E');
 
       if (geom) {
-        const feature = {
+        const feature: Feature = {
           type: 'Feature',
           geometry: geom,
           properties: { id: inc.id, color, severity: inc.severity, title: inc.title, category: inc.category },
@@ -456,7 +458,7 @@ export const SafetyGlobeMap: React.FC = () => {
         if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
           streetFeatures.push(feature);
         } else if (geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
-          if (Array.isArray(geom.coordinates) && geom.coordinates[0]?.length >= 4) {
+          if (geom.type === 'Polygon' ? geom.coordinates[0]?.length >= 4 : geom.coordinates[0]?.[0]?.length >= 4) {
             polyFeatures.push(feature);
           } else {
             pointFeatures.push(feature);
@@ -657,11 +659,12 @@ export const SafetyGlobeMap: React.FC = () => {
     el.style.gap = '4px';
     el.style.cursor = 'pointer';
     el.innerHTML = `
-      <div style="background:rgba(15,23,42,0.92);color:#FFFFFF;font-size:11px;font-weight:700;padding:4px 10px;border-radius:99px;border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(12px);white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,0.5)">
-        ${truncated}
-      </div>
+      <div class="safety-search-pin-label" style="background:rgba(15,23,42,0.92);color:#FFFFFF;font-size:11px;font-weight:700;padding:4px 10px;border-radius:99px;border:1px solid rgba(255,255,255,0.15);backdrop-filter:blur(12px);white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,0.5)"></div>
       <div style="width:10px;height:10px;border-radius:50%;background:#38BDF8;border:2px solid #FFFFFF;box-shadow:0 0 10px #38BDF8"></div>
     `;
+    // Place names come from external geocoders: inserted as text, never as HTML (XSS)
+    const label = el.querySelector('.safety-search-pin-label');
+    if (label) label.textContent = truncated;
 
     searchMarkerRef.current = new Marker({ element: el, anchor: 'bottom' })
       .setLngLat([selectedLocation.longitude, selectedLocation.latitude])
@@ -692,7 +695,7 @@ export const SafetyGlobeMap: React.FC = () => {
           if (map.getLayer(SELECTION_FLOW_LAYER_ID)) {
             map.setPaintProperty(SELECTION_FLOW_LAYER_ID, 'line-dasharray', [0, dash1, 4, 2]);
           }
-        } catch {}
+        } catch { /* best effort: ignore */ }
       }
 
       vectorAnimRef.current = requestAnimationFrame(animateLoop);
@@ -706,113 +709,189 @@ export const SafetyGlobeMap: React.FC = () => {
   }, []);
 
   const drawingModeRef = useRef(drawingMode);
-  drawingModeRef.current = drawingMode;
   const drawingCategoryRef = useRef(drawingCategory);
-  drawingCategoryRef.current = drawingCategory;
   const drawingCoordinatesRef = useRef(drawingCoordinates);
-  drawingCoordinatesRef.current = drawingCoordinates;
+  useLayoutEffect(() => {
+    drawingModeRef.current = drawingMode;
+    drawingCategoryRef.current = drawingCategory;
+    drawingCoordinatesRef.current = drawingCoordinates;
+  });
+
+  // ── Map event handlers (effect events: always see the latest state/props;
+  //    they used to capture the mount-time incidents list) ─────────────────
+  const getInitialView = useEffectEvent(() => {
+    const tileStyle = filters.mapTileStyle as 'dark' | 'light' | 'satellite' | 'osm';
+    return {
+      style: VECTOR_STYLES[tileStyle] || VECTOR_STYLES.dark,
+      center: [mapCenter[1], mapCenter[0]] as [number, number],
+      zoom: mapZoom,
+      pitch: mapPitch,
+      bearing: mapBearing,
+    };
+  });
+  const isGlobeNow = useEffectEvent(() => isGlobeMode);
+
+  const rebuildLayers = useEffectEvent((map: MapLibreMap) => {
+    ensure3DBuildingLayers(map);
+    ensurePointLayers(map);
+    ensureStreetLayers(map);
+    ensurePolygonLayers(map);
+    ensureSelectionLayers(map);
+    ensureDrawingTempLayers(map);
+    updateVectorGeometries(map);
+  });
+
+  const onMapZoom = useEffectEvent(() => syncIncidentMarkers());
+  const onMapZoomEnd = useEffectEvent((map: MapLibreMap) => {
+    syncIncidentMarkers();
+    if (!isProgrammaticRef.current && !rotationActiveRef.current) setMapZoom(map.getZoom());
+  });
+  const onMapMoveEnd = useEffectEvent((map: MapLibreMap) => {
+    if (!isProgrammaticRef.current && !rotationActiveRef.current) {
+      const center = map.getCenter();
+      setMapCenter([center.lat, center.lng]);
+    }
+    isProgrammaticRef.current = false;
+  });
+
+  const onClusterClick = useEffectEvent(async (map: MapLibreMap, e: MapMouseEvent) => {
+    lastActionTimestampRef.current = Date.now();
+    const features = map.queryRenderedFeatures(e.point, { layers: [CLUSTERS_LAYER_ID] });
+    if (!features.length) return;
+    const clusterId = features[0].properties?.cluster_id;
+    const source = map.getSource(POINTS_SOURCE_ID) as GeoJSONSource;
+    const geometry = features[0].geometry;
+    if (clusterId && source && geometry.type === 'Point' && typeof source.getClusterExpansionZoom === 'function') {
+      const nextZoom = await source.getClusterExpansionZoom(clusterId);
+      map.easeTo({ center: geometry.coordinates as [number, number], zoom: nextZoom + 0.5, duration: 600 });
+      hapticFeedback('light');
+    }
+  });
+
+  const onIncidentFeatureClick = useEffectEvent((map: MapLibreMap, e: MapMouseEvent, layerId: string) => {
+    lastActionTimestampRef.current = Date.now();
+    const features = map.queryRenderedFeatures(e.point, { layers: [layerId] });
+    if (!features.length) return;
+    const incId = features[0].properties?.id;
+    const inc = filteredIncidents.find((i) => i.id === incId);
+    if (inc) {
+      hapticFeedback('medium');
+      setSelectedLocation(null);
+      setActiveModal(null);
+      setSelectedIncident(inc);
+      map.flyTo({ center: [inc.longitude, inc.latitude], zoom: Math.max(map.getZoom(), 16.5), pitch: 45, duration: 1000 });
+    }
+  });
+
+  const onMapClick = useEffectEvent((map: MapLibreMap, e: MapMouseEvent) => {
+  // Prevent click collision if user tapped a marker, layer or button within the last 450ms
+  if (Date.now() - lastActionTimestampRef.current < 450) return;
+
+  try {
+    if (drawingModeRef.current !== 'idle') {
+      if (drawingModeRef.current === 'point') {
+        addDrawingVertex([e.lngLat.lng, e.lngLat.lat]);
+        if (finishDrawing()) setActiveModal('report');
+      } else {
+        addDrawingVertex([e.lngLat.lng, e.lngLat.lat]);
+      }
+      return;
+    }
+
+    // Check if an interactive layer was clicked (with 8px tolerance buffer)
+    const hitLayers = [CLUSTERS_LAYER_ID, POINTS_CORE_LAYER_ID, STREET_LINE_LAYER_ID, STREET_GLOW_LAYER_ID, POLYGON_OUTLINE_LAYER_ID].filter(id => {
+      try { return !!map.getLayer(id); } catch { return false; }
+    });
+    if (hitLayers.length > 0) {
+      const bbox: [[number, number], [number, number]] = [
+        [e.point.x - 8, e.point.y - 8],
+        [e.point.x + 8, e.point.y + 8]
+      ];
+      const hitFeatures = map.queryRenderedFeatures(bbox, { layers: hitLayers });
+      if (hitFeatures.length > 0) return;
+    }
+
+    const { lng, lat } = e.lngLat;
+    hapticFeedback('light');
+
+    const requestId = ++latestLocationRequestIdRef.current;
+
+    // If clicking on the globe from high altitude (zoom < 9.0), smoothly zoom to the clicked location
+    if (map.getZoom() < 9.0) {
+      map.flyTo({ center: [lng, lat], zoom: 14.5, pitch: 45, duration: 1200 });
+    }
+
+    // 🚀 INSTANT UI FEEDBACK (0 ms) - Display Location Detail Sheet immediately
+    setSelectedIncident(null);
+    setSelectedLocation({
+      latitude: lat,
+      longitude: lng,
+      name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      streetName: '',
+      neighborhood: '',
+      city: 'Zone analysée',
+      streetGeometry: null,
+    });
+    setActiveModal('locationDetail');
+
+    // Background non-blocking geocoding enrichment:
+    reverseGeocode(lat, lng)
+      .then(async (geocoded) => {
+        if (latestLocationRequestIdRef.current !== requestId) return;
+        let streetGeom = null;
+        if (geocoded.street && geocoded.street !== 'Position GPS') {
+          streetGeom = await fetchStreetGeometry(geocoded.street, lat, lng, 600).catch(() => null);
+        }
+        if (latestLocationRequestIdRef.current !== requestId) return;
+        setSelectedLocation({
+          latitude: lat,
+          longitude: lng,
+          name: geocoded.street || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+          streetName: geocoded.street,
+          neighborhood: geocoded.neighborhood,
+          city: geocoded.city,
+          streetGeometry: streetGeom,
+        });
+      })
+      .catch(() => {});
+  } catch (err) {
+    console.warn('[SafetyMap] Safe map click handler notice:', err);
+  }
+  });
 
   // ── 5. Main Map Initialization (Single instance, GPU accelerated) ──────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
-    const tileStyle = filters.mapTileStyle as 'dark' | 'light' | 'satellite' | 'osm';
-    const fallbackStyle = VECTOR_STYLES[tileStyle] || VECTOR_STYLES.dark;
-
+    const initialView = getInitialView();
     const map = new MapLibreMap({
       container: mapContainerRef.current,
-      style: fallbackStyle,
-      center: [mapCenter[1], mapCenter[0]],
-      zoom: mapZoom,
-      pitch: mapPitch,
-      bearing: mapBearing,
-      projection: { type: isGlobeMode ? 'globe' : 'mercator' },
-    } as any);
+      style: initialView.style,
+      center: initialView.center,
+      zoom: initialView.zoom,
+      pitch: initialView.pitch,
+      bearing: initialView.bearing,
+    });
 
     mapRef.current = map;
 
     map.on('style.load', () => {
       styleLoadedRef.current = true;
-      try { (map as any).setProjection({ type: isGlobeMode ? 'globe' : 'mercator' }); } catch {}
-      ensure3DBuildingLayers(map);
-      ensurePointLayers(map);
-      ensureStreetLayers(map);
-      ensurePolygonLayers(map);
-      ensureSelectionLayers(map);
-      ensureDrawingTempLayers(map);
-      updateVectorGeometries(map);
+      try { map.setProjection({ type: isGlobeNow() ? 'globe' : 'mercator' }); } catch { /* best effort: ignore */ }
+      rebuildLayers(map);
     });
 
     map.on('styledata', () => {
-      if (styleLoadedRef.current) {
-        ensure3DBuildingLayers(map);
-        ensurePointLayers(map);
-        ensureStreetLayers(map);
-        ensurePolygonLayers(map);
-        ensureSelectionLayers(map);
-        ensureDrawingTempLayers(map);
-        updateVectorGeometries(map);
-      }
+      if (styleLoadedRef.current) rebuildLayers(map);
     });
 
-    map.on('zoom', () => {
-      syncIncidentMarkers();
-    });
-    map.on('zoomend', () => {
-      syncIncidentMarkers();
-      if (!isProgrammaticRef.current && !rotationActiveRef.current) setMapZoom(map.getZoom());
-    });
-    map.on('moveend', () => {
-      if (!isProgrammaticRef.current && !rotationActiveRef.current) {
-        const center = map.getCenter();
-        setMapCenter([center.lat, center.lng]);
-      }
-      isProgrammaticRef.current = false;
-    });
+    map.on('zoom', () => onMapZoom());
+    map.on('zoomend', () => onMapZoomEnd(map));
+    map.on('moveend', () => onMapMoveEnd(map));
 
-    map.on('click', CLUSTERS_LAYER_ID, async (e: MapMouseEvent) => {
-      lastActionTimestampRef.current = Date.now();
-      const features = map.queryRenderedFeatures(e.point, { layers: [CLUSTERS_LAYER_ID] });
-      if (!features.length) return;
-      const clusterId = features[0].properties?.cluster_id;
-      const source = map.getSource(POINTS_SOURCE_ID) as GeoJSONSource;
-      if (clusterId && source && typeof source.getClusterExpansionZoom === 'function') {
-        const nextZoom = await source.getClusterExpansionZoom(clusterId);
-        const coords = (features[0].geometry as any).coordinates;
-        map.easeTo({ center: coords, zoom: nextZoom + 0.5, duration: 600 });
-        hapticFeedback('light');
-      }
-    });
-
-    map.on('click', POINTS_CORE_LAYER_ID, (e: MapMouseEvent) => {
-      lastActionTimestampRef.current = Date.now();
-      const features = map.queryRenderedFeatures(e.point, { layers: [POINTS_CORE_LAYER_ID] });
-      if (!features.length) return;
-      const incId = features[0].properties?.id;
-      const inc = filteredIncidents.find((i) => i.id === incId);
-      if (inc) {
-        hapticFeedback('medium');
-        setSelectedLocation(null);
-        setActiveModal(null);
-        setSelectedIncident(inc);
-        map.flyTo({ center: [inc.longitude, inc.latitude], zoom: Math.max(map.getZoom(), 16.5), pitch: 45, duration: 1000 });
-      }
-    });
-
-    map.on('click', STREET_LINE_LAYER_ID, (e: MapMouseEvent) => {
-      lastActionTimestampRef.current = Date.now();
-      const features = map.queryRenderedFeatures(e.point, { layers: [STREET_LINE_LAYER_ID] });
-      if (!features.length) return;
-      const incId = features[0].properties?.id;
-      const inc = filteredIncidents.find((i) => i.id === incId);
-      if (inc) {
-        hapticFeedback('medium');
-        setSelectedLocation(null);
-        setActiveModal(null);
-        setSelectedIncident(inc);
-        map.flyTo({ center: [inc.longitude, inc.latitude], zoom: Math.max(map.getZoom(), 16.5), pitch: 45, duration: 1000 });
-      }
-    });
+    map.on('click', CLUSTERS_LAYER_ID, (e: MapMouseEvent) => { onClusterClick(map, e); });
+    map.on('click', POINTS_CORE_LAYER_ID, (e: MapMouseEvent) => onIncidentFeatureClick(map, e, POINTS_CORE_LAYER_ID));
+    map.on('click', STREET_LINE_LAYER_ID, (e: MapMouseEvent) => onIncidentFeatureClick(map, e, STREET_LINE_LAYER_ID));
 
     const canvas = map.getCanvas();
     map.on('mouseenter', CLUSTERS_LAYER_ID, () => { canvas.style.cursor = 'pointer'; });
@@ -826,92 +905,7 @@ export const SafetyGlobeMap: React.FC = () => {
     map.touchZoomRotate.enable();
     map.touchZoomRotate.enableRotation();
 
-    map.on('click', (e: MapMouseEvent) => {
-      // Prevent click collision if user tapped a marker, layer or button within the last 450ms
-      if (Date.now() - lastActionTimestampRef.current < 450) return;
-
-      try {
-        if (drawingModeRef.current !== 'idle') {
-          if (drawingModeRef.current === 'point') {
-            addDrawingVertex([e.lngLat.lng, e.lngLat.lat]);
-            if (finishDrawing()) setActiveModal('report');
-          } else {
-            addDrawingVertex([e.lngLat.lng, e.lngLat.lat]);
-          }
-          return;
-        }
-
-        // Check if an interactive layer was clicked (with 8px tolerance buffer)
-        const hitLayers = [CLUSTERS_LAYER_ID, POINTS_CORE_LAYER_ID, STREET_LINE_LAYER_ID, STREET_GLOW_LAYER_ID, POLYGON_OUTLINE_LAYER_ID].filter(id => {
-          try { return !!map.getLayer(id); } catch { return false; }
-        });
-        if (hitLayers.length > 0) {
-          const bbox: [[number, number], [number, number]] = [
-            [e.point.x - 8, e.point.y - 8],
-            [e.point.x + 8, e.point.y + 8]
-          ];
-          const hitFeatures = map.queryRenderedFeatures(bbox, { layers: hitLayers });
-          if (hitFeatures.length > 0) return;
-        }
-
-        const { lng, lat } = e.lngLat;
-        hapticFeedback('light');
-
-        const requestId = ++latestLocationRequestIdRef.current;
-
-        // If clicking on the globe from high altitude (zoom < 9.0), smoothly zoom to the clicked location
-        if (map.getZoom() < 9.0) {
-          map.flyTo({ center: [lng, lat], zoom: 14.5, pitch: 45, duration: 1200 });
-        }
-
-        // 🚀 INSTANT UI FEEDBACK (0 ms) - Display Location Detail Sheet immediately
-        setSelectedIncident(null);
-        setSelectedLocation({
-          latitude: lat,
-          longitude: lng,
-          name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-          streetName: '',
-          neighborhood: '',
-          city: 'Zone analysée',
-          streetGeometry: null,
-        });
-        setActiveModal('locationDetail');
-
-        // Background non-blocking geocoding enrichment:
-        reverseGeocode(lat, lng)
-          .then(async (geocoded) => {
-            if (latestLocationRequestIdRef.current !== requestId) return;
-            let streetGeom = null;
-            if (geocoded.street && geocoded.street !== 'Position GPS') {
-              streetGeom = await fetchStreetGeometry(geocoded.street, lat, lng, 600).catch(() => null);
-            }
-            if (latestLocationRequestIdRef.current !== requestId) return;
-            setSelectedLocation({
-              latitude: lat,
-              longitude: lng,
-              name: geocoded.street || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-              streetName: geocoded.street,
-              neighborhood: geocoded.neighborhood,
-              city: geocoded.city,
-              streetGeometry: streetGeom,
-            });
-          })
-          .catch(() => {});
-      } catch (err) {
-        console.warn('[SafetyMap] Safe map click handler notice:', err);
-      }
-    });
-
-    const handlePointerDown = () => {};
-    const handlePointerUp = () => {};
-    const handlePointerMove = () => {};
-
-    map.on('mousedown', handlePointerDown);
-    map.on('touchstart' as any, handlePointerDown);
-    map.on('mouseup', handlePointerUp);
-    map.on('touchend' as any, handlePointerUp);
-    map.on('mousemove', handlePointerMove);
-    map.on('touchmove' as any, handlePointerMove);
+    map.on('click', (e: MapMouseEvent) => onMapClick(map, e));
 
     const DEG_PER_MS = 0.0035;
     const RESUME_DELAY_MS = 3000;
@@ -920,14 +914,14 @@ export const SafetyGlobeMap: React.FC = () => {
     canvas.style.willChange = 'transform';
 
     function startRotation() {
-      if (!isGlobeMode || (mapRef.current && mapRef.current.getZoom() > 5.5)) { stopRotation(); return; }
+      if (!isGlobeNow() || (mapRef.current && mapRef.current.getZoom() > 5.5)) { stopRotation(); return; }
       if (rotationActiveRef.current) return;
       rotationActiveRef.current = true;
       lastTs = null;
       function frame(ts: number) {
         if (!rotationActiveRef.current || !mapRef.current) return;
         const m = mapRef.current;
-        if (!isGlobeMode || m.getZoom() > 5.5) { rotationActiveRef.current = false; return; }
+        if (!isGlobeNow() || m.getZoom() > 5.5) { rotationActiveRef.current = false; return; }
         if (lastTs !== null) {
           const safeDelta = Math.min(ts - lastTs, 100);
           const center = m.getCenter();
@@ -945,23 +939,23 @@ export const SafetyGlobeMap: React.FC = () => {
     function pauseAndScheduleResume() {
       stopRotation();
       if (rotationPauseTimerRef.current) clearTimeout(rotationPauseTimerRef.current);
-      if (isGlobeMode) rotationPauseTimerRef.current = setTimeout(() => { if (mapRef.current && isGlobeMode && mapRef.current.getZoom() <= 5.5) startRotation(); }, RESUME_DELAY_MS);
+      if (isGlobeNow()) rotationPauseTimerRef.current = setTimeout(() => { if (mapRef.current && isGlobeNow() && mapRef.current.getZoom() <= 5.5) startRotation(); }, RESUME_DELAY_MS);
     }
 
     startRotationRef.current = startRotation;
     stopRotationRef.current = stopRotation;
 
     map.on('style.load', () => {
-      if (isGlobeMode && map.getZoom() <= 5.5) startRotation();
-      setTimeout(() => { try { map.resize(); } catch {} }, 50);
-      setTimeout(() => { try { map.resize(); } catch {} }, 300);
+      if (isGlobeNow() && map.getZoom() <= 5.5) startRotation();
+      setTimeout(() => { try { map.resize(); } catch { /* best effort: ignore */ } }, 50);
+      setTimeout(() => { try { map.resize(); } catch { /* best effort: ignore */ } }, 300);
     });
     (['mousedown', 'touchstart', 'wheel', 'dragstart'] as const).forEach((ev) => map.on(ev, pauseAndScheduleResume));
 
     let ro: ResizeObserver | null = null;
     if (typeof ResizeObserver !== 'undefined' && mapContainerRef.current) {
       ro = new ResizeObserver(() => {
-        try { map.resize(); } catch {}
+        try { map.resize(); } catch { /* best effort: ignore */ }
       });
       ro.observe(mapContainerRef.current);
     }
@@ -986,7 +980,7 @@ export const SafetyGlobeMap: React.FC = () => {
     map.setStyle(VECTOR_STYLES[filters.mapTileStyle] || VECTOR_STYLES.dark);
     map.once('style.load', () => {
       styleLoadedRef.current = true;
-      try { (map as any).setProjection({ type: isGlobeMode ? 'globe' : 'mercator' }); } catch {}
+      try { map.setProjection({ type: isGlobeMode ? 'globe' : 'mercator' }); } catch { /* best effort: ignore */ }
       ensure3DBuildingLayers(map);
       ensurePointLayers(map);
       ensureStreetLayers(map);
@@ -994,7 +988,7 @@ export const SafetyGlobeMap: React.FC = () => {
       ensureSelectionLayers(map);
       ensureDrawingTempLayers(map);
       updateVectorGeometries(map);
-      try { map.resize(); } catch {}
+      try { map.resize(); } catch { /* best effort: ignore */ }
       if (isGlobeMode && map.getZoom() <= 5.5) {
         startRotationRef.current();
       }
@@ -1004,7 +998,7 @@ export const SafetyGlobeMap: React.FC = () => {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleLoadedRef.current) return;
-    try { (map as any).setProjection({ type: isGlobeMode ? 'globe' : 'mercator' }); } catch {}
+    try { map.setProjection({ type: isGlobeMode ? 'globe' : 'mercator' }); } catch { /* best effort: ignore */ }
     if (isGlobeMode && map.getZoom() <= 5.5) {
       startRotationRef.current();
     } else {
@@ -1024,7 +1018,7 @@ export const SafetyGlobeMap: React.FC = () => {
     if (!cam) return;
     rotationActiveRef.current = false;
     isProgrammaticRef.current = true;
-    try { map.stop(); } catch {}
+    try { map.stop(); } catch { /* best effort: ignore */ }
     map.flyTo({ center: [cam.lon, cam.lat], zoom: cam.zoom, pitch: cam.pitch, bearing: cam.bearing, duration: 1400, essential: true });
   }, [cameraNonce]);
 
@@ -1041,7 +1035,7 @@ export const SafetyGlobeMap: React.FC = () => {
     const source = map.getSource(DRAWING_TEMP_SOURCE_ID) as GeoJSONSource | undefined;
     if (!source) return;
     const color = categoryColors[drawingCategory] || '#2563EB';
-    const features: any[] = [];
+    const features: Feature[] = [];
     if (drawingCoordinates.length > 0) {
       drawingCoordinates.forEach((coord, idx) => features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: coord }, properties: { color, vertexIndex: idx } }));
       if ((drawingMode === 'linestring' || drawingMode === 'polygon') && drawingCoordinates.length >= 2) {

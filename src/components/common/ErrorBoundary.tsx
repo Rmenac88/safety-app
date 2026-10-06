@@ -39,7 +39,7 @@ export class ErrorBoundary extends Component<Props, State> {
               if (typeof window !== 'undefined') {
                 try {
                   localStorage.removeItem('safety_local_incidents_v2');
-                } catch {}
+                } catch { /* best effort: ignore */ }
                 window.location.reload();
               }
             }}

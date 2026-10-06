@@ -1,4 +1,5 @@
-import { api, getIncidentOwnerToken, saveIncidentOwnerToken } from './client';
+import type { Geometry } from 'geojson';
+import { api, coarseCoord, getIncidentOwnerToken, saveIncidentOwnerToken } from './client';
 
 export interface IncidentDTO {
   id: string;
@@ -19,7 +20,7 @@ export interface IncidentDTO {
   time_slot_relevance?: string;
   estimated_duration: string;
   geometry_type: string;
-  geojson_geometry?: string | any;
+  geojson_geometry?: string | Geometry;
   created_at: string;
   expires_at: string;
   trust_score?: number;
@@ -68,8 +69,8 @@ export function fetchIncidents(params?: {
   limit?: number;
 }): Promise<IncidentListDTO> {
   const qs = new URLSearchParams();
-  if (params?.lat !== undefined) qs.set('lat', String(params.lat));
-  if (params?.lon !== undefined) qs.set('lon', String(params.lon));
+  if (params?.lat !== undefined) qs.set('lat', String(coarseCoord(params.lat)));
+  if (params?.lon !== undefined) qs.set('lon', String(coarseCoord(params.lon)));
   if (params?.radius_m !== undefined) qs.set('radius_m', String(params.radius_m));
   if (params?.min_lon !== undefined) qs.set('min_lon', String(params.min_lon));
   if (params?.min_lat !== undefined) qs.set('min_lat', String(params.min_lat));
@@ -91,12 +92,6 @@ export const createIncident = async (payload: CreateIncidentPayload): Promise<Cr
   }
   return res;
 };
-
-export const confirmIncident = (id: string) =>
-  api.patch<IncidentDTO>(`/incidents/${id}/confirm`);
-
-export const disputeIncident = (id: string) =>
-  api.patch<IncidentDTO>(`/incidents/${id}/dispute`);
 
 export const voteIncidentApi = (id: string, payload: { vote_type: string; previous_vote?: string; session_id?: string }) =>
   api.post<IncidentDTO>(`/incidents/${id}/vote`, payload);
@@ -125,19 +120,21 @@ export interface ClassifiedIncidentDTO {
   detected_keywords: string[];
 }
 
+// NB: durations must be one of the backend's allowed values
+// ("30 min" | "2 h" | "12 h" | "24 h" | "permanent"), otherwise publishing fails with a 422.
 const LOCAL_NLP_RULES: Record<string, { keywords: string[]; severity: string; geometry: string; duration: string; title: string }> = {
   altercation: {
     keywords: ['bagarre', 'battent', 'rixe', 'dispute', 'altercation', 'embrouille', 'frapper', 'frappe', 'insulte'],
     severity: 'high',
     geometry: 'Point',
-    duration: '1 h',
+    duration: '2 h',
     title: 'Altercation signalée',
   },
   violence: {
     keywords: ['agression', 'violence', 'attaque', 'couteau', 'arme', 'braquage', 'coups', 'sang', 'violent'],
     severity: 'critical',
     geometry: 'Point',
-    duration: '1 h',
+    duration: '2 h',
     title: 'Agression / Violence physique',
   },
   lighting: {
@@ -158,14 +155,14 @@ const LOCAL_NLP_RULES: Record<string, { keywords: string[]; severity: string; ge
     keywords: ['obstacle', 'trou', 'chaussee', 'chaussée', 'nid de poule', 'arbre', 'branche', 'travaux', 'barriere', 'barrière', 'verglas', 'glissant', 'debris', 'débris'],
     severity: 'medium',
     geometry: 'LineString',
-    duration: '4 h',
+    duration: '12 h',
     title: 'Obstacle / Voie entravée',
   },
   harassment: {
     keywords: ['harcelement', 'harcèlement', 'suivi', 'suivre', 'intrusif', 'siffle', 'sifflé', 'rode', 'rôde', 'menace', 'menacé'],
     severity: 'high',
     geometry: 'Point',
-    duration: '1 h',
+    duration: '2 h',
     title: 'Harcèlement / Intimidation',
   },
   burglary: {
@@ -193,14 +190,14 @@ const LOCAL_NLP_RULES: Record<string, { keywords: string[]; severity: string; ge
     keywords: ['secours', 'samu', 'ambulance', 'malaise', 'inconscient', 'inconsciente', 'cardiaque', 'chute grave', 'urgence'],
     severity: 'high',
     geometry: 'Point',
-    duration: '45 min',
+    duration: '2 h',
     title: 'Secours / Urgence médicale',
   },
   avoid: {
     keywords: ['eviter', 'éviter', 'zone a eviter', 'zone à éviter', 'tension', 'danger', 'groupe hostile', 'périmètre'],
     severity: 'high',
     geometry: 'Polygon',
-    duration: '4 h',
+    duration: '12 h',
     title: 'Zone à éviter temporairement',
   },
 };
@@ -251,7 +248,7 @@ export const classifyIncidentText = async (text: string): Promise<ClassifiedInci
       new Promise<null>((r) => setTimeout(() => r(null), 300)),
     ]);
     if (apiRes) return apiRes;
-  } catch {}
+  } catch { /* best effort: ignore */ }
 
   return localResult;
 };

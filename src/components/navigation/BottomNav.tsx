@@ -1,12 +1,14 @@
 import React from 'react';
 import { Map, Flame, Star, Shield, Plus } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
+import { useNow } from '../../hooks/useNow';
 
 export const BottomNav: React.FC = () => {
   const {
     activeModal, setActiveModal, setSelectedIncident, setSelectedLocation,
     hapticFeedback, filteredIncidents, filters, drawingMode,
   } = useSafety();
+  const now = useNow(30_000);
 
   // Only hide bottom dock during active vector drawing mode to leave space for drawing toolbar
   if (drawingMode !== 'idle') return null;
@@ -14,7 +16,7 @@ export const BottomNav: React.FC = () => {
   const isDark = filters.mapTileStyle === 'dark';
 
   const liveCount = filteredIncidents.filter((i) => {
-    const age = Date.now() - new Date(i.created_at).getTime();
+    const age = now - new Date(i.created_at).getTime();
     return age < 3_600_000;
   }).length;
 

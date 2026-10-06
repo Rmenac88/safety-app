@@ -1,17 +1,18 @@
 import React, { useState } from 'react';
 import { X, Flame, MapPin, Clock, ArrowRight, ShieldCheck, Plus, AlertTriangle, Trash2 } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categoryColors, categoryIcons } from '../../design/tokens';
 import type { IncidentDTO } from '../../api/incidentApi';
 import { formatExactAgo } from '../../utils/timeAgo';
+import { useNow } from '../../hooks/useNow';
 
 export const LiveFeedDrawer: React.FC = () => {
   const { activeModal, setActiveModal, incidents, setMapCenter, setSelectedIncident, handleDelete, hapticFeedback } = useSafety();
   const [tab, setTab] = useState<'all' | 'recent' | 'critical'>('all');
+  const now = useNow(30_000, activeModal === 'live');
 
   if (activeModal !== 'live') return null;
 
-  const now = Date.now();
   const live = [...incidents]
     .filter((i) => i.status === 'active')
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())

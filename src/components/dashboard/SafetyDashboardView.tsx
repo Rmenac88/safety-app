@@ -3,7 +3,7 @@ import {
   ShieldCheck, AlertTriangle, Clock, MapPin,
   ThumbsUp, ThumbsDown, ChevronRight, RefreshCw
 } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categoryColors, categoryIcons, categoryLabels } from '../../design/tokens';
 import { formatExactAgo } from '../../utils/timeAgo';
 

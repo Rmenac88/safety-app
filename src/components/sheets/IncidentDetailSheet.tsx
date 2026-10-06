@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, MapPin, ThumbsUp, ThumbsDown, CheckCircle, Share2, User, AlertTriangle, Trash2 } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categoryColors, categoryIcons, categoryLabels } from '../../design/tokens';
 import { formatExactAgo } from '../../utils/timeAgo';
+import { useNow } from '../../hooks/useNow';
 
 const SEVERITY_LABELS: Record<string, { label: string; lightCls: string; darkCls: string }> = {
   critical: {
@@ -38,13 +39,8 @@ export const IncidentDetailSheet: React.FC = () => {
 
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [, setTick] = useState(0);
-
-  // Live timer tick every 15s
-  useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 15000);
-    return () => clearInterval(timer);
-  }, []);
+  // Live timer tick every 15s ("il y a X min" stays current)
+  const now = useNow(15000);
 
   if (!selectedIncident) return null;
 
@@ -56,7 +52,7 @@ export const IncidentDetailSheet: React.FC = () => {
   const label = categoryLabels[inc.category] || 'Signalement';
   const sev = SEVERITY_LABELS[inc.severity] || SEVERITY_LABELS.low;
 
-  const ageMs = Date.now() - new Date(inc.created_at).getTime();
+  const ageMs = now - new Date(inc.created_at).getTime();
   const isVeryRecent = ageMs < 15 * 60_000;
 
   const handleCenterOnMap = () => {

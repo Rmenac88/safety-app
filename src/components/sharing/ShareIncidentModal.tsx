@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Share2, Copy, Check, MapPin, Clock, ShieldCheck, Sparkles, Shield } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import type { IncidentDTO } from '../../api/incidentApi';
 import { categoryColors, categoryIcons, categoryLabels } from '../../design/tokens';
 import { formatExactAgo } from '../../utils/timeAgo';
@@ -47,7 +47,7 @@ export const ShareIncidentModal: React.FC<ShareIncidentModalProps> = ({ incident
           text: shareText,
           url: shareUrl,
         });
-      } catch {}
+      } catch { /* best effort: ignore */ }
     } else {
       handleCopyLink();
     }

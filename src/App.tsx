@@ -14,12 +14,13 @@ import { FavoritesModal } from './components/favorites/FavoritesModal';
 import { ModerationDrawer } from './components/moderation/ModerationDrawer';
 import { OnboardingModal } from './components/onboarding/OnboardingModal';
 import { WalkWithMeSheet } from './components/walk/WalkWithMeSheet';
+import { PrivacyNotice } from './components/legal/PrivacyNotice';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { SheetErrorBoundary } from './components/common/SheetErrorBoundary';
 
 import { PWAInstallBanner } from './components/pwa/PWAInstallBanner';
 import { OfflineBanner } from './components/common/OfflineBanner';
-import { useSafety } from './context/SafetyContext';
+import { useSafety } from './context/useSafety';
 import { useEffect } from 'react';
 
 function AppContent() {
@@ -97,6 +98,9 @@ function AppContent() {
       </SheetErrorBoundary>
       <SheetErrorBoundary fallbackName="ModerationDrawer">
         <ModerationDrawer />
+      </SheetErrorBoundary>
+      <SheetErrorBoundary fallbackName="PrivacyNotice">
+        <PrivacyNotice />
       </SheetErrorBoundary>
       <SheetErrorBoundary fallbackName="OnboardingModal">
         <OnboardingModal />

@@ -4,7 +4,7 @@ import {
   ShieldCheck, ChevronUp, ChevronDown, Radar,
   Navigation2, Activity, ArrowUpRight
 } from 'lucide-react';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { categoryColors, categoryIcons, categoryLabels } from '../../design/tokens';
 
 function haversineDist(lat1: number, lon1: number, lat2: number, lon2: number) {

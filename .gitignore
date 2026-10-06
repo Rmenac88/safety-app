@@ -34,3 +34,12 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Database dumps / backups (may contain personal data)
+*.bak
+*.sqlite
+*.sqlite3
+*.dump
+
+# Rapport d audit : local uniquement (dépôt public)
+AUDIT-COMPLET.md

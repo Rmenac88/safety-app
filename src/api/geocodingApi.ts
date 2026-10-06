@@ -1,3 +1,4 @@
+import type { LineString } from 'geojson';
 import { MAPBOX_TOKEN } from '../config/mapbox';
 
 export interface GeocodedPlace {
@@ -12,6 +13,51 @@ export interface GeocodedPlace {
   longitude: number;
   type: string;
 }
+
+// ── Minimal shapes of the external geocoder responses we read ────────────────
+interface MapboxContextItem {
+  id: string;
+  text: string;
+}
+
+interface MapboxFeature {
+  id: string;
+  text?: string;
+  address?: string;
+  place_name: string;
+  place_type?: string[];
+  center: [number, number];
+  context?: MapboxContextItem[];
+  properties?: { address?: string };
+}
+
+interface NominatimAddress {
+  road?: string;
+  pedestrian?: string;
+  street?: string;
+  house_number?: string;
+  suburb?: string;
+  neighbourhood?: string;
+  quarter?: string;
+  city?: string;
+  town?: string;
+  village?: string;
+  municipality?: string;
+  country?: string;
+}
+
+interface NominatimItem {
+  place_id: number | string;
+  name?: string;
+  display_name: string;
+  lat: string;
+  lon: string;
+  type?: string;
+  address?: NominatimAddress;
+}
+
+const findContext = (ctx: MapboxContextItem[] | undefined, ...prefixes: string[]) =>
+  ctx?.find((c) => prefixes.some((p) => c.id.startsWith(p)))?.text;
 
 const CACHE = new Map<string, GeocodedPlace[]>();
 const REV_CACHE = new Map<string, { street: string; neighborhood: string; city: string; formatted: string }>();
@@ -40,16 +86,15 @@ export async function searchPlaces(
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.features) && data.features.length > 0) {
-        const places: GeocodedPlace[] = data.features.map((f: any) => {
-          const ctx = f.context || [];
-          const neighborhood = ctx.find((c: any) => c.id.startsWith('neighborhood') || c.id.startsWith('locality'))?.text;
-          const city = ctx.find((c: any) => c.id.startsWith('place'))?.text;
-          const country = ctx.find((c: any) => c.id.startsWith('country'))?.text;
+        const places: GeocodedPlace[] = (data.features as MapboxFeature[]).map((f) => {
+          const neighborhood = findContext(f.context, 'neighborhood', 'locality');
+          const city = findContext(f.context, 'place');
+          const country = findContext(f.context, 'country');
           const street = f.address ? `${f.address} ${f.text}` : f.text;
 
           return {
             placeId: f.id,
-            name: f.text || street,
+            name: f.text || street || f.place_name,
             displayName: f.place_name,
             streetName: street,
             neighborhood,
@@ -65,8 +110,8 @@ export async function searchPlaces(
         return places;
       }
     }
-  } catch (err: any) {
-    if (err?.name === 'AbortError') throw err;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
     console.warn('[geocodingApi] Mapbox places notice, falling back to OSM:', err);
   }
 
@@ -82,8 +127,8 @@ export async function searchPlaces(
     if (!res.ok) return [];
     const data = await res.json();
 
-    const places: GeocodedPlace[] = (data || []).map((item: any) => {
-      const address = item.address || {};
+    const places: GeocodedPlace[] = ((data || []) as NominatimItem[]).map((item) => {
+      const address: NominatimAddress = item.address || {};
       const street = address.road || address.pedestrian || address.street;
       const suburb = address.suburb || address.neighbourhood || address.quarter;
       const city = address.city || address.town || address.village || address.municipality;
@@ -125,12 +170,12 @@ export async function reverseGeocode(
     const res = await fetch(mapboxUrl);
     if (res.ok) {
       const data = await res.json();
-      const feat = data.features?.[0];
+      const feat = (data.features as MapboxFeature[] | undefined)?.[0];
       if (feat) {
         const placeName = feat.place_name || feat.text || `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-        const cityName = feat.context?.find((c: any) => c.id.startsWith('place'))?.text || feat.text || '';
+        const cityName = findContext(feat.context, 'place') || feat.text || '';
         const street = feat.properties?.address || feat.text || '';
-        const neighborhood = feat.context?.find((c: any) => c.id.startsWith('neighborhood') || c.id.startsWith('locality'))?.text || '';
+        const neighborhood = findContext(feat.context, 'neighborhood', 'locality') || '';
 
         const result = {
           street: street || 'Position repérée',
@@ -142,7 +187,7 @@ export async function reverseGeocode(
         return result;
       }
     }
-  } catch {}
+  } catch { /* best effort: ignore */ }
 
   // 2. Nominatim Reverse Fallback
   try {
@@ -150,7 +195,7 @@ export async function reverseGeocode(
     const res = await fetch(nomUrl, { headers: { 'User-Agent': 'SafetyApp/2.0' } });
     if (res.ok) {
       const data = await res.json();
-      const address = data.address || {};
+      const address: NominatimAddress = (data as NominatimItem).address || {};
       const street = address.road || address.pedestrian || address.street || '';
       const hn = address.house_number ? `${address.house_number} ` : '';
       const suburb = address.suburb || address.neighbourhood || address.quarter || '';
@@ -165,17 +210,19 @@ export async function reverseGeocode(
       REV_CACHE.set(key, result);
       return result;
     }
-  } catch {}
+  } catch { /* best effort: ignore */ }
 
   return { street: 'Position GPS', neighborhood: '', city: '', formatted: `${lat.toFixed(4)}, ${lon.toFixed(4)}` };
 }
 
+/** Street geometry lookup is currently disabled client-side (always resolves to null). */
 export async function fetchStreetGeometry(
-  _street: string,
-  _lat: number,
-  _lon: number,
-  _radius_m = 600
-): Promise<any | null> {
+  street: string,
+  lat: number,
+  lon: number,
+  radiusM = 600
+): Promise<LineString | null> {
+  void street; void lat; void lon; void radiusM;
   return null;
 }
 
@@ -193,7 +240,7 @@ export function saveSearchToHistory(place: GeocodedPlace) {
   try {
     const history = getSearchHistory().filter((p) => p.placeId !== place.placeId);
     localStorage.setItem(HISTORY_KEY, JSON.stringify([place, ...history].slice(0, 8)));
-  } catch {}
+  } catch { /* best effort: ignore */ }
 }
 
 export function clearSearchHistory() {

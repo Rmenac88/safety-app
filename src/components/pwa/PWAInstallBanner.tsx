@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Share, PlusSquare, Download, Sparkles, ChevronRight } from 'lucide-react';
 import { useDevice } from '../../hooks/useDevice';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -49,7 +49,7 @@ export const PWAInstallBanner: React.FC = () => {
     setIsDismissed(true);
     try {
       sessionStorage.setItem('safety_install_dismissed', '1');
-    } catch {}
+    } catch { /* best effort: ignore */ }
   };
 
   const handleAndroidInstall = async () => {

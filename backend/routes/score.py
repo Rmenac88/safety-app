@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import get_db
 from models import Incident, IncidentStatus
 from schemas import SafetyScoreResponse
-from security.anti_abuse import generate_client_fingerprint, check_read_scraping_quota
+from security.anti_abuse import get_client_ip, hash_client_ip, generate_client_fingerprint, check_read_scraping_quota
 
 router = APIRouter(prefix="/score", tags=["score"])
 
@@ -36,9 +36,9 @@ def get_safety_score(
     within the given radius. Returns null score if no data exists (never invents a number).
     Rate-limited to prevent abuse.
     """
-    client_ip = request.client.host if request.client else "127.0.0.1"
+    client_ip = get_client_ip(request)
     fp = generate_client_fingerprint(client_ip, x_device_id or "")
-    allowed, retry_after = check_read_scraping_quota(fp)
+    allowed, retry_after = check_read_scraping_quota(fp, db, hash_client_ip(client_ip))
     if not allowed:
         raise HTTPException(
             status_code=429,

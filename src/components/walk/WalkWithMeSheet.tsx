@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useEffectEvent } from 'react';
 import {
   X, Clock, Phone, Share2, AlertTriangle,
   Volume2, VolumeX, CheckCircle, MapPin,
@@ -6,12 +6,13 @@ import {
   Compass, Bell, MessageSquare, ShieldAlert, PhoneCall
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { useSafety } from '../../context/SafetyContext';
+import { useSafety } from '../../context/useSafety';
 import { searchPlaces } from '../../api/geocodingApi';
 import type { GeocodedPlace } from '../../api/geocodingApi';
 import { calculateDistance, formatDistance } from '../../utils/geoUtils';
 import { computeWalkingEstimate } from '../../utils/walkingMath';
 import { fetchNearbyPois, type PoiCategory, type NearbyPoi } from '../../services/nearbyPoiService';
+import { useNow } from '../../hooks/useNow';
 
 const POI_CATEGORIES: { id: PoiCategory; label: string; icon: string }[] = [
   { id: 'transit', label: 'Gares & Métro', icon: '🚉' },
@@ -31,8 +32,8 @@ export const WalkWithMeSheet: React.FC = () => {
 
   // Destination configuration inputs
   const [destinationQuery, setDestinationQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<GeocodedPlace[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
+  // Last completed search, keyed by the query it answers
+  const [search, setSearch] = useState<{ query: string; places: GeocodedPlace[] }>({ query: '', places: [] });
   const [selectedPlace, setSelectedPlace] = useState<{
     name: string;
     coords: [number, number];
@@ -41,8 +42,7 @@ export const WalkWithMeSheet: React.FC = () => {
 
   // Nearby POIs
   const [activeCategory, setActiveCategory] = useState<PoiCategory>('transit');
-  const [nearbyPois, setNearbyPois] = useState<NearbyPoi[]>([]);
-  const [isLoadingPois, setIsLoadingPois] = useState(false);
+  const [poiResult, setPoiResult] = useState<{ key: string; pois: NearbyPoi[] } | null>(null);
 
   // Mathematical walking buffer & adjusters
   const [extraBufferMinutes, setExtraBufferMinutes] = useState(0);
@@ -70,47 +70,56 @@ export const WalkWithMeSheet: React.FC = () => {
     }
   };
 
-  // Load nearby POIs for the active category
-  const loadCategoryPois = useCallback(async (cat: PoiCategory) => {
-    if (cat === 'favorites') return;
-    setIsLoadingPois(true);
-    try {
-      const results = await fetchNearbyPois(cat, userLocation);
-      setNearbyPois(results);
-    } catch (err) {
-      console.warn('Load category POIs notice:', err);
-    } finally {
-      setIsLoadingPois(false);
-    }
-  }, [userLocation]);
+  // Nearby POIs for the active category. Refetched when the category changes or the
+  // user moves ~100 m (not on every GPS tick); the previous list stays visible meanwhile.
+  const poiOrigin = userLocation ? `${userLocation[0].toFixed(3)},${userLocation[1].toFixed(3)}` : 'none';
+  const poiKey = activeModal === 'walk' && !walkSession && activeCategory !== 'favorites'
+    ? `${activeCategory}@${poiOrigin}`
+    : null;
+  const nearbyPois = poiResult?.pois ?? [];
+  const isLoadingPois = poiKey !== null && poiResult?.key !== poiKey;
+  const getUserLocation = useEffectEvent(() => userLocation);
 
   useEffect(() => {
-    if (activeModal === 'walk' && !walkSession) {
-      loadCategoryPois(activeCategory);
-    }
-  }, [activeCategory, activeModal, walkSession, loadCategoryPois]);
+    if (!poiKey) return;
+    let cancelled = false;
+    const category = poiKey.split('@')[0] as PoiCategory;
+    fetchNearbyPois(category, getUserLocation())
+      .then((pois) => {
+        if (!cancelled) setPoiResult({ key: poiKey, pois });
+      })
+      .catch((err) => {
+        console.warn('Load category POIs notice:', err);
+        if (!cancelled) setPoiResult((prev) => ({ key: poiKey, pois: prev?.pois ?? [] }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [poiKey]);
 
-  // Autocomplete search for destination
+  // Autocomplete search for destination (debounced, keyed by query)
+  const trimmedDestination = destinationQuery.trim();
+  const wantsResults = trimmedDestination.length >= 2;
+  const isSearching = wantsResults && search.query !== destinationQuery;
+  const searchResults = wantsResults && search.query === destinationQuery ? search.places : [];
+
   useEffect(() => {
-    if (destinationQuery.trim().length < 2) {
-      setSearchResults([]);
-      return;
-    }
-
+    if (!wantsResults) return;
+    let cancelled = false;
     const timer = setTimeout(async () => {
-      setIsSearching(true);
+      let places: GeocodedPlace[] = [];
       try {
-        const places = await searchPlaces(destinationQuery, undefined, userLocation || undefined);
-        setSearchResults(places);
+        places = await searchPlaces(destinationQuery, undefined, getUserLocation() || undefined);
       } catch (err) {
         console.warn('Geocoding search notice:', err);
-      } finally {
-        setIsSearching(false);
       }
+      if (!cancelled) setSearch({ query: destinationQuery, places });
     }, 300);
-
-    return () => clearTimeout(timer);
-  }, [destinationQuery]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [destinationQuery, wantsResults]);
 
   // Mathematical ETA Calculation
   const mathematicalEstimate = useMemo(() => {
@@ -128,6 +137,9 @@ export const WalkWithMeSheet: React.FC = () => {
     };
   }, [selectedPlace, userLocation, extraBufferMinutes]);
 
+  // Live countdown (ticks every second while a walk is running)
+  const now = useNow(1000, activeModal === 'walk' && !!walkSession);
+
   // Confetti on arrival
   useEffect(() => {
     if (walkSession?.status === 'arrived') {
@@ -138,14 +150,13 @@ export const WalkWithMeSheet: React.FC = () => {
           origin: { y: 0.6 },
           colors: ['#06B6D4', '#10B981', '#3B82F6', '#F59E0B'],
         });
-      } catch {}
+      } catch { /* best effort: ignore */ }
     }
   }, [walkSession?.status]);
 
   if (activeModal !== 'walk') return null;
 
   // Real-time walk metrics
-  const now = Date.now();
   const remainingMs = walkSession ? Math.max(0, walkSession.targetArrivalTimestamp - now) : 0;
   const remainingMinutes = Math.floor(remainingMs / 60000);
   const remainingSeconds = Math.floor((remainingMs % 60000) / 1000);
@@ -195,14 +206,14 @@ export const WalkWithMeSheet: React.FC = () => {
           url: shareUrl,
         });
         return;
-      } catch {}
+      } catch { /* best effort: ignore */ }
     }
 
     try {
       await navigator.clipboard.writeText(shareText);
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 3000);
-    } catch {}
+    } catch { /* best effort: ignore */ }
   };
 
   const emergencyDialNumber = walkSession?.contactPhone || '17';
@@ -555,7 +566,6 @@ export const WalkWithMeSheet: React.FC = () => {
                           address: place.displayName,
                         });
                         setDestinationQuery(place.name);
-                        setSearchResults([]);
                       }}
                       className="w-full text-left px-3 py-2.5 rounded-xl text-xs font-semibold hover:bg-cyan-500/10 hover:text-cyan-400 transition-colors flex items-center justify-between"
                     >
